@@ -1,0 +1,42 @@
+# Copy to config.yaml and adjust. Secrets (webhook URLs, SMTP passwords) are
+# never written here directly -- channels reference an environment variable
+# name and the value is resolved at load time (see .env.example).
+
+database:
+  url: sqlite:///./alerts.db
+
+scheduler:
+  default_interval_seconds: 60
+  max_concurrent_checks: 20
+
+monitors:
+  - name: main-site
+    type: http
+    target: https://example.com
+    interval_seconds: 30
+    timeout_seconds: 5
+    expected_status: 200
+    failure_threshold: 3
+    recovery_threshold: 2
+    channels: [ops-slack, ops-email]
+
+  - name: api-gateway
+    type: http
+    target: https://api.example.com/healthz
+    interval_seconds: 15
+    failure_threshold: 2
+    channels: [ops-slack]
+
+channels:
+  - name: ops-slack
+    type: slack
+    webhook_url_env: SLACK_WEBHOOK_URL
+
+  - name: ops-email
+    type: email
+    smtp_host: smtp.example.com
+    smtp_port: 587
+    from_addr: alerts@example.com
+    to_addrs: [oncall@example.com]
+    username_env: SMTP_USERNAME
+    password_env: SMTP_PASSWORD
