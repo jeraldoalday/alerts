@@ -12,9 +12,9 @@ Early development. Current state:
 - [x] Config loading and validation (`config.yaml` + env-resolved secrets)
 - [x] Database models: monitors, check results, incidents, notification log
 - [x] Alembic migrations
-- [ ] HTTP checker + scheduler
-- [ ] TCP / DNS / SSL checkers
-- [ ] Monitor state machine + incident lifecycle
+- [x] HTTP checker + scheduler
+- [x] TCP / DNS / SSL checkers
+- [ ] Incident lifecycle (open/resolve on top of monitor state)
 - [ ] Notification engine (dedup, cooldown, escalation)
 - [ ] Slack / email / webhook notifiers
 - [ ] Web dashboard
@@ -44,6 +44,9 @@ src/alerts/
   config.py       # YAML config loading + validation
   db.py           # SQLAlchemy engine/session setup
   models/         # ORM models: Monitor, CheckResult, Incident, NotificationLog
+  checkers/       # Per-protocol check implementations (HTTP so far)
+  scheduler.py    # Per-monitor interval loop, state transitions
+  cli.py          # `alerts run` entrypoint
 migrations/       # Alembic migrations
 tests/
 ```
