@@ -26,6 +26,9 @@ dev = [
     "types-PyYAML",
 ]
 
+[project.scripts]
+alerts = "alerts.cli:main"
+
 [tool.setuptools.packages.find]
 where = ["src"]
 
