@@ -116,6 +116,10 @@ class Scheduler:
         self._stopping.set()
         if self._tasks:
             await asyncio.gather(*self._tasks)
+        for checker in self._checkers.values():
+            aclose = getattr(checker, "aclose", None)
+            if aclose is not None:
+                await aclose()
 
     async def _run_monitor_loop(self, monitor_id: int) -> None:
         while not self._stopping.is_set():
