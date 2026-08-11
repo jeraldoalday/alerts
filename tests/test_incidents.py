@@ -45,6 +45,37 @@ def test_sync_incident_resolves_open_incident_on_transition_to_up(db):
         assert incident.resolved_at is not None
 
 
+def test_sync_incident_opens_one_on_first_ever_check_failing(db):
+    with db.session() as session:
+        monitor = _monitor(session, state=MonitorState.DOWN)
+        sync_incident(session, monitor, previous_state=MonitorState.UNKNOWN, cause="dns failure")
+
+    with db.session() as session:
+        incident = session.query(Incident).one()
+        assert incident.state == IncidentState.OPEN
+        assert incident.cause == "dns failure"
+
+
+def test_sync_incident_only_resolves_the_affected_monitors_incident(db):
+    with db.session() as session:
+        monitor_a = _monitor(session, name="site-a", state=MonitorState.DOWN)
+        monitor_b = _monitor(session, name="site-b", state=MonitorState.DOWN)
+        sync_incident(session, monitor_a, previous_state=MonitorState.UP, cause="a down")
+        sync_incident(session, monitor_b, previous_state=MonitorState.UP, cause="b down")
+        monitor_a_id, monitor_b_id = monitor_a.id, monitor_b.id
+
+    with db.session() as session:
+        monitor_a = session.query(Monitor).filter_by(name="site-a").one()
+        monitor_a.state = MonitorState.UP
+        sync_incident(session, monitor_a, previous_state=MonitorState.DOWN)
+
+    with db.session() as session:
+        incident_a = session.query(Incident).filter_by(monitor_id=monitor_a_id).one()
+        incident_b = session.query(Incident).filter_by(monitor_id=monitor_b_id).one()
+        assert incident_a.state == IncidentState.RESOLVED
+        assert incident_b.state == IncidentState.OPEN
+
+
 def test_sync_incident_is_noop_when_state_unchanged(db):
     with db.session() as session:
         monitor = _monitor(session, state=MonitorState.UP)
