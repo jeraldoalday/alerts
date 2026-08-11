@@ -53,3 +53,21 @@ async def test_http_checker_reports_timeouts():
 
     assert outcome.success is False
     assert "timed out" in outcome.error_message
+
+
+async def test_aclose_closes_a_self_owned_client():
+    checker = HttpChecker()
+
+    await checker.aclose()
+
+    assert checker._client.is_closed is True
+
+
+async def test_aclose_leaves_an_injected_client_open():
+    client = httpx.AsyncClient(transport=httpx.MockTransport(lambda request: httpx.Response(200)))
+    checker = HttpChecker(client=client)
+
+    await checker.aclose()
+
+    assert client.is_closed is False
+    await client.aclose()
