@@ -1,7 +1,7 @@
 
 import pytest
 
-from alerts.config import ConfigError, load_config
+from alerts.config import ConfigError, EmailChannelConfig, load_config
 
 VALID_CONFIG = """
 database:
@@ -65,6 +65,24 @@ monitors:
         load_config(config_file)
 
 
+def test_duplicate_channel_names_rejected(tmp_path):
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(
+        """
+channels:
+  - name: dup
+    type: webhook
+    url: https://a.example.com
+  - name: dup
+    type: webhook
+    url: https://b.example.com
+"""
+    )
+
+    with pytest.raises(ConfigError, match="duplicate channel names"):
+        load_config(config_file)
+
+
 def test_monitor_referencing_unknown_channel_rejected(tmp_path):
     config_file = tmp_path / "config.yaml"
     config_file.write_text(
@@ -115,3 +133,31 @@ def test_slack_channel_missing_env_raises(tmp_path, monkeypatch):
 
     with pytest.raises(ConfigError, match="SLACK_WEBHOOK_URL"):
         _ = config.channels[0].webhook_url
+
+
+def _email_channel(**overrides) -> EmailChannelConfig:
+    defaults = dict(
+        name="ops-email",
+        type="email",
+        smtp_host="smtp.example.com",
+        from_addr="alerts@example.com",
+        to_addrs=["oncall@example.com"],
+    )
+    defaults.update(overrides)
+    return EmailChannelConfig(**defaults)
+
+
+def test_email_channel_resolves_credentials_from_env(monkeypatch):
+    monkeypatch.setenv("SMTP_USER", "bot")
+    monkeypatch.setenv("SMTP_PASS", "secret")
+    channel = _email_channel(username_env="SMTP_USER", password_env="SMTP_PASS")
+
+    assert channel.username == "bot"
+    assert channel.password == "secret"
+
+
+def test_email_channel_credentials_are_none_without_env_vars():
+    channel = _email_channel()
+
+    assert channel.username is None
+    assert channel.password is None
