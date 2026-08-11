@@ -14,7 +14,7 @@ Early development. Current state:
 - [x] Alembic migrations
 - [x] HTTP checker + scheduler
 - [x] TCP / DNS / SSL checkers
-- [ ] Incident lifecycle (open/resolve on top of monitor state)
+- [x] Incident lifecycle (open/resolve on top of monitor state)
 - [ ] Notification engine (dedup, cooldown, escalation)
 - [ ] Slack / email / webhook notifiers
 - [ ] Web dashboard
@@ -46,6 +46,7 @@ src/alerts/
   models/         # ORM models: Monitor, CheckResult, Incident, NotificationLog
   checkers/       # Per-protocol check implementations (HTTP so far)
   scheduler.py    # Per-monitor interval loop, state transitions
+  incidents.py    # Opens/resolves Incident records on DOWN/UP transitions
   cli.py          # `alerts run` entrypoint
 migrations/       # Alembic migrations
 tests/
