@@ -16,6 +16,7 @@ from alerts.checkers.ssl import SslChecker
 from alerts.checkers.tcp import TcpChecker
 from alerts.config import MonitorConfig
 from alerts.db import Database
+from alerts.incidents import sync_incident
 from alerts.models import CheckResult, Monitor, MonitorState, MonitorType
 
 
@@ -159,4 +160,6 @@ class Scheduler:
                         error_message=outcome.error_message,
                     )
                 )
+                previous_state = monitor.state
                 apply_check_outcome(monitor, outcome)
+                sync_incident(session, monitor, previous_state, cause=outcome.error_message)
