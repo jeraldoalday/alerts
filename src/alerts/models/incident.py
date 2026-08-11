@@ -4,7 +4,7 @@ import enum
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, List, Optional
 
-from sqlalchemy import Enum, ForeignKey, Integer, Text
+from sqlalchemy import Enum, ForeignKey, Index, Integer, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from alerts.models.base import Base
@@ -31,9 +31,14 @@ class Incident(Base):
     """
 
     __tablename__ = "incidents"
+    __table_args__ = (
+        # Covers `sync_incident`'s lookup of the open incident for a monitor
+        # (filters on monitor_id + state) without a separate single-column index.
+        Index("ix_incidents_monitor_id_state", "monitor_id", "state"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    monitor_id: Mapped[int] = mapped_column(ForeignKey("monitors.id"), index=True)
+    monitor_id: Mapped[int] = mapped_column(ForeignKey("monitors.id"))
 
     state: Mapped[IncidentState] = mapped_column(Enum(IncidentState), default=IncidentState.OPEN)
     cause: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
