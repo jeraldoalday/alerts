@@ -43,6 +43,17 @@ async def test_ssl_checker_reports_connection_errors():
     assert "connection refused" in outcome.error_message
 
 
+async def test_ssl_checker_rejects_malformed_target():
+    checker = SslChecker()
+
+    outcome = await checker.check(
+        target="example.com:notaport", timeout_seconds=2, expected_status=200
+    )
+
+    assert outcome.success is False
+    assert "must be" in outcome.error_message
+
+
 async def test_ssl_checker_uses_injected_certificate():
     not_after = datetime.now(timezone.utc) + timedelta(days=10)
 
