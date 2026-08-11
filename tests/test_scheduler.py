@@ -2,7 +2,7 @@ import asyncio
 
 from alerts.checkers.base import CheckOutcome
 from alerts.config import MonitorConfig
-from alerts.models import CheckResult, Monitor, MonitorState, MonitorType
+from alerts.models import CheckResult, Incident, IncidentState, Monitor, MonitorState, MonitorType
 from alerts.scheduler import Scheduler, apply_check_outcome, sync_monitors
 
 
@@ -119,3 +119,25 @@ async def test_scheduler_uses_the_checker_matching_monitor_type(db):
         # Port 1 on localhost is not listening, so the real TCP checker fails.
         assert result.success is False
         assert result.error_message
+
+
+async def test_scheduler_opens_incident_when_monitor_crosses_failure_threshold(db):
+    with db.session() as session:
+        session.add(_monitor(interval_seconds=60, failure_threshold=1))
+
+    fake = _FakeChecker(CheckOutcome(success=False, error_message="connection refused"))
+    scheduler = Scheduler(db, checkers={MonitorType.HTTP: fake})
+
+    run_task = asyncio.create_task(scheduler.run())
+    await asyncio.sleep(0.05)
+    await scheduler.stop()
+    await run_task
+
+    with db.session() as session:
+        monitor = session.query(Monitor).filter_by(name="site").one()
+        assert monitor.state == MonitorState.DOWN
+
+        incident = session.query(Incident).one()
+        assert incident.monitor_id == monitor.id
+        assert incident.state == IncidentState.OPEN
+        assert incident.cause == "connection refused"
