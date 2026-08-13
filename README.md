@@ -15,7 +15,7 @@ Early development. Current state:
 - [x] HTTP checker + scheduler
 - [x] TCP / DNS / SSL checkers
 - [x] Incident lifecycle (open/resolve on top of monitor state)
-- [ ] Notification engine (dedup, cooldown, escalation)
+- [x] Notification engine (dedup, cooldown, escalation)
 - [ ] Slack / email / webhook notifiers
 - [ ] Web dashboard
 
