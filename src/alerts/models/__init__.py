@@ -4,7 +4,7 @@ get resolved.
 """
 from alerts.models.base import Base
 from alerts.models.check_result import CheckResult
-from alerts.models.incident import Incident, IncidentState, NotificationLog
+from alerts.models.incident import Incident, IncidentState, NotificationKind, NotificationLog
 from alerts.models.monitor import Monitor, MonitorState, MonitorType
 
 __all__ = [
@@ -12,6 +12,7 @@ __all__ = [
     "CheckResult",
     "Incident",
     "IncidentState",
+    "NotificationKind",
     "NotificationLog",
     "Monitor",
     "MonitorState",

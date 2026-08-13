@@ -55,6 +55,20 @@ class Incident(Base):
         return f"Incident(id={self.id}, monitor_id={self.monitor_id}, state={self.state.value})"
 
 
+class NotificationKind(str, enum.Enum):
+    """What an incident notification is about.
+
+    OPENED and RESOLVED each fire once per incident per channel. ESCALATION
+    repeats on the notification engine's cooldown for as long as the
+    incident stays open, so on-call still hears about it if the first
+    notification gets missed.
+    """
+
+    OPENED = "opened"
+    ESCALATION = "escalation"
+    RESOLVED = "resolved"
+
+
 class NotificationLog(Base):
     """Record of one attempt to notify a channel about an incident."""
 
@@ -63,6 +77,9 @@ class NotificationLog(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     incident_id: Mapped[int] = mapped_column(ForeignKey("incidents.id"), index=True)
     channel_name: Mapped[str] = mapped_column(Text)
+    kind: Mapped[NotificationKind] = mapped_column(
+        Enum(NotificationKind), default=NotificationKind.OPENED
+    )
     sent_at: Mapped[datetime] = mapped_column(default=_utcnow)
     success: Mapped[bool] = mapped_column(default=False)
     error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
