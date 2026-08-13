@@ -8,6 +8,7 @@ from alerts.models import (
     Monitor,
     MonitorState,
     MonitorType,
+    NotificationKind,
     NotificationLog,
 )
 
@@ -63,12 +64,46 @@ def test_incident_lifecycle_and_notification_log(db):
         assert incident.resolved_at is None
         assert len(incident.notifications) == 1
         assert incident.notifications[0].channel_name == "ops-slack"
+        assert incident.notifications[0].kind == NotificationKind.OPENED
 
         incident.state = IncidentState.RESOLVED
 
     with db.session() as session:
         incident = session.query(Incident).one()
         assert incident.state == IncidentState.RESOLVED
+
+
+def test_notification_log_kind_is_explicitly_settable(db):
+    with db.session() as session:
+        monitor = Monitor(name="site", type=MonitorType.HTTP, target="https://x.example.com")
+        session.add(monitor)
+        session.flush()
+
+        incident = Incident(monitor_id=monitor.id)
+        session.add(incident)
+        session.flush()
+
+        session.add(
+            NotificationLog(
+                incident_id=incident.id,
+                channel_name="ops-slack",
+                kind=NotificationKind.ESCALATION,
+                success=True,
+            )
+        )
+        session.add(
+            NotificationLog(
+                incident_id=incident.id,
+                channel_name="ops-slack",
+                kind=NotificationKind.RESOLVED,
+                success=True,
+            )
+        )
+
+    with db.session() as session:
+        incident = session.query(Incident).one()
+        kinds = {n.kind for n in incident.notifications}
+        assert kinds == {NotificationKind.ESCALATION, NotificationKind.RESOLVED}
 
 
 def test_monitor_name_must_be_unique(db):
