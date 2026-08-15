@@ -7,6 +7,7 @@ a semaphore sized from `scheduler.max_concurrent_checks` in the config.
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timezone
 from typing import Dict, Iterable, List, Optional
 
 from alerts.checkers.base import Checker, CheckOutcome
@@ -17,7 +18,10 @@ from alerts.checkers.tcp import TcpChecker
 from alerts.config import MonitorConfig
 from alerts.db import Database
 from alerts.incidents import sync_incident
-from alerts.models import CheckResult, Monitor, MonitorState, MonitorType
+from alerts.models import CheckResult, Incident, Monitor, MonitorState, MonitorType, NotificationLog
+from alerts.notifications import decide_notifications
+from alerts.notifiers.base import Notifier
+from alerts.notifiers.message import format_message
 
 
 def default_checkers() -> Dict[MonitorType, Checker]:
@@ -99,9 +103,13 @@ class Scheduler:
         database: Database,
         checkers: Optional[Dict[MonitorType, Checker]] = None,
         max_concurrent_checks: int = 20,
+        notifiers: Optional[Dict[str, Notifier]] = None,
+        cooldown_seconds: int = 900,
     ):
         self._database = database
         self._checkers = checkers or default_checkers()
+        self._notifiers = notifiers or {}
+        self._cooldown_seconds = cooldown_seconds
         self._semaphore = asyncio.Semaphore(max_concurrent_checks)
         self._stopping = asyncio.Event()
         self._tasks: List[asyncio.Task] = []
@@ -120,6 +128,10 @@ class Scheduler:
             await asyncio.gather(*self._tasks)
         for checker in self._checkers.values():
             aclose = getattr(checker, "aclose", None)
+            if aclose is not None:
+                await aclose()
+        for notifier in self._notifiers.values():
+            aclose = getattr(notifier, "aclose", None)
             if aclose is not None:
                 await aclose()
 
@@ -169,3 +181,60 @@ class Scheduler:
                 previous_state = monitor.state
                 apply_check_outcome(monitor, outcome)
                 sync_incident(session, monitor, previous_state, cause=outcome.error_message)
+
+        await self._dispatch_notifications(monitor_id)
+
+    async def _dispatch_notifications(self, monitor_id: int) -> None:
+        """Send whatever notifications the engine decides are due, and log them.
+
+        Runs after every check (not just on state transitions), since
+        escalation decisions depend on cooldown elapsing over repeated
+        checks of an incident that's stayed open. Notifier sends happen
+        outside the DB session -- they're network I/O -- so the incident's
+        data needed for `decide_notifications` and message rendering is
+        pulled out first.
+        """
+        if not self._notifiers:
+            return
+
+        with self._database.session() as session:
+            monitor = session.get(Monitor, monitor_id)
+            if monitor is None:
+                return
+            incident = (
+                session.query(Incident)
+                .filter_by(monitor_id=monitor.id)
+                .order_by(Incident.started_at.desc())
+                .first()
+            )
+            if incident is None:
+                return
+            decisions = decide_notifications(
+                incident,
+                monitor.channels,
+                self._cooldown_seconds,
+                now=datetime.now(timezone.utc),
+            )
+            if not decisions:
+                return
+            incident_id = incident.id
+            messages = {
+                decision.kind: format_message(monitor, incident, decision.kind)
+                for decision in decisions
+            }
+
+        for decision in decisions:
+            notifier = self._notifiers.get(decision.channel_name)
+            if notifier is None:
+                continue
+            result = await notifier.send(messages[decision.kind])
+            with self._database.session() as session:
+                session.add(
+                    NotificationLog(
+                        incident_id=incident_id,
+                        channel_name=decision.channel_name,
+                        kind=decision.kind,
+                        success=result.success,
+                        error_message=result.error_message,
+                    )
+                )
