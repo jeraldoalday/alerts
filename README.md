@@ -16,7 +16,7 @@ Early development. Current state:
 - [x] TCP / DNS / SSL checkers
 - [x] Incident lifecycle (open/resolve on top of monitor state)
 - [x] Notification engine (dedup, cooldown, escalation)
-- [ ] Slack / email / webhook notifiers
+- [x] Slack / email / webhook notifiers
 - [ ] Web dashboard
 
 See open issues and commit history for day-to-day progress.
@@ -44,9 +44,11 @@ src/alerts/
   config.py       # YAML config loading + validation
   db.py           # SQLAlchemy engine/session setup
   models/         # ORM models: Monitor, CheckResult, Incident, NotificationLog
-  checkers/       # Per-protocol check implementations (HTTP so far)
-  scheduler.py    # Per-monitor interval loop, state transitions
+  checkers/       # Per-protocol check implementations (HTTP, TCP, DNS, SSL)
+  scheduler.py    # Per-monitor interval loop, state transitions, notification dispatch
   incidents.py    # Opens/resolves Incident records on DOWN/UP transitions
+  notifications.py  # Dedup/cooldown/escalation decisions for open incidents
+  notifiers/      # Per-channel senders (Slack, webhook, email) + registry
   cli.py          # `alerts run` entrypoint
 migrations/       # Alembic migrations
 tests/

@@ -9,6 +9,11 @@ scheduler:
   default_interval_seconds: 60
   max_concurrent_checks: 20
 
+notifications:
+  # How long a channel that already fired for an incident waits before it's
+  # notified again (as an escalation) while that incident stays open.
+  cooldown_seconds: 900
+
 monitors:
   - name: main-site
     type: http
@@ -40,3 +45,11 @@ channels:
     to_addrs: [oncall@example.com]
     username_env: SMTP_USERNAME
     password_env: SMTP_PASSWORD
+
+  - name: ops-pagerduty
+    type: webhook
+    url: https://events.example.com/v2/enqueue
+    # Unlike webhook_url_env / *_env above, header values are literal --
+    # there's no env-var resolution for them yet, so don't put secrets here.
+    headers:
+      X-Source: alerts
