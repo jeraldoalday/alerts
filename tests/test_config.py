@@ -52,6 +52,47 @@ def test_notifications_cooldown_is_configurable(tmp_path):
     assert config.notifications.cooldown_seconds == 60
 
 
+def test_scheduler_default_interval_backfills_monitors_that_omit_it(tmp_path):
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(
+        """
+scheduler:
+  default_interval_seconds: 45
+
+monitors:
+  - name: uses-default
+    type: http
+    target: https://a.example.com
+  - name: overrides-default
+    type: http
+    target: https://b.example.com
+    interval_seconds: 10
+"""
+    )
+
+    config = load_config(config_file)
+
+    by_name = {m.name: m for m in config.monitors}
+    assert by_name["uses-default"].interval_seconds == 45
+    assert by_name["overrides-default"].interval_seconds == 10
+
+
+def test_scheduler_default_interval_falls_back_to_60_when_unset(tmp_path):
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(
+        """
+monitors:
+  - name: site
+    type: http
+    target: https://a.example.com
+"""
+    )
+
+    config = load_config(config_file)
+
+    assert config.monitors[0].interval_seconds == 60
+
+
 def test_missing_file_raises(tmp_path):
     with pytest.raises(ConfigError, match="not found"):
         load_config(tmp_path / "missing.yaml")

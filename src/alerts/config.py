@@ -9,10 +9,10 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import List, Literal, Optional, Union
+from typing import Any, List, Literal, Optional, Union
 
 import yaml
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class DatabaseConfig(BaseModel):
@@ -95,6 +95,33 @@ class AppConfig(BaseModel):
     notifications: NotificationsConfig = Field(default_factory=NotificationsConfig)
     monitors: List[MonitorConfig] = Field(default_factory=list)
     channels: List[ChannelConfig] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def apply_scheduler_default_interval(cls, data: Any) -> Any:
+        """Backfill a monitor's interval from `scheduler.default_interval_seconds`.
+
+        Runs on the raw dict before per-monitor validation, so it only fills
+        in monitors that omit `interval_seconds` entirely -- one explicitly
+        set to the same value as the default is left alone, not that it
+        would behave differently either way. Without this, the documented
+        `scheduler.default_interval_seconds` config.example.yaml knob had no
+        effect: MonitorConfig's own field default of 60 always won.
+        """
+        if not isinstance(data, dict):
+            return data
+        scheduler_cfg = data.get("scheduler")
+        default_interval = (
+            scheduler_cfg.get("default_interval_seconds")
+            if isinstance(scheduler_cfg, dict)
+            else None
+        )
+        if default_interval is None:
+            return data
+        for monitor in data.get("monitors") or []:
+            if isinstance(monitor, dict) and "interval_seconds" not in monitor:
+                monitor["interval_seconds"] = default_interval
+        return data
 
     @field_validator("monitors")
     @classmethod
