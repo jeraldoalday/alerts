@@ -75,6 +75,7 @@ def sync_monitors(session, monitor_configs: Iterable[MonitorConfig]) -> None:
                     expected_status=cfg.expected_status,
                     failure_threshold=cfg.failure_threshold,
                     recovery_threshold=cfg.recovery_threshold,
+                    channels=list(cfg.channels),
                 )
             )
         else:
@@ -85,6 +86,7 @@ def sync_monitors(session, monitor_configs: Iterable[MonitorConfig]) -> None:
             monitor.expected_status = cfg.expected_status
             monitor.failure_threshold = cfg.failure_threshold
             monitor.recovery_threshold = cfg.recovery_threshold
+            monitor.channels = list(cfg.channels)
 
 
 class Scheduler:

@@ -4,7 +4,7 @@ import enum
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, List
 
-from sqlalchemy import Enum, Integer, String
+from sqlalchemy import JSON, Enum, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from alerts.models.base import Base
@@ -52,6 +52,7 @@ class Monitor(Base):
     expected_status: Mapped[int] = mapped_column(Integer, default=200)
     failure_threshold: Mapped[int] = mapped_column(Integer, default=3)
     recovery_threshold: Mapped[int] = mapped_column(Integer, default=2)
+    channels: Mapped[List[str]] = mapped_column(JSON, default=list)
 
     state: Mapped[MonitorState] = mapped_column(
         Enum(MonitorState), default=MonitorState.UNKNOWN
