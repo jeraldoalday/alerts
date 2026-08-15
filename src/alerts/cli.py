@@ -8,6 +8,7 @@ from typing import List, Optional
 
 from alerts.config import load_config
 from alerts.db import Database
+from alerts.notifiers.registry import build_notifiers
 from alerts.scheduler import Scheduler, sync_monitors
 
 
@@ -29,7 +30,13 @@ async def _run(config_path: str) -> None:
     with database.session() as session:
         sync_monitors(session, config.monitors)
 
-    scheduler = Scheduler(database, max_concurrent_checks=config.scheduler.max_concurrent_checks)
+    notifiers = build_notifiers(config.channels)
+    scheduler = Scheduler(
+        database,
+        max_concurrent_checks=config.scheduler.max_concurrent_checks,
+        notifiers=notifiers,
+        cooldown_seconds=config.notifications.cooldown_seconds,
+    )
     await scheduler.run()
 
 
