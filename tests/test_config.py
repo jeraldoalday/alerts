@@ -34,6 +34,24 @@ def test_load_valid_config(tmp_path):
     assert config.channels[0].name == "ops-slack"
 
 
+def test_notifications_cooldown_defaults_when_unset(tmp_path):
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(VALID_CONFIG)
+
+    config = load_config(config_file)
+
+    assert config.notifications.cooldown_seconds == 900
+
+
+def test_notifications_cooldown_is_configurable(tmp_path):
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(VALID_CONFIG + "\nnotifications:\n  cooldown_seconds: 60\n")
+
+    config = load_config(config_file)
+
+    assert config.notifications.cooldown_seconds == 60
+
+
 def test_missing_file_raises(tmp_path):
     with pytest.raises(ConfigError, match="not found"):
         load_config(tmp_path / "missing.yaml")

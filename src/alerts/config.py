@@ -24,6 +24,10 @@ class SchedulerConfig(BaseModel):
     max_concurrent_checks: int = Field(default=20, ge=1)
 
 
+class NotificationsConfig(BaseModel):
+    cooldown_seconds: int = Field(default=900, ge=1)
+
+
 class MonitorConfig(BaseModel):
     name: str
     type: Literal["http", "tcp", "dns", "ssl"]
@@ -88,6 +92,7 @@ ChannelConfig = Union[SlackChannelConfig, WebhookChannelConfig, EmailChannelConf
 class AppConfig(BaseModel):
     database: DatabaseConfig = Field(default_factory=DatabaseConfig)
     scheduler: SchedulerConfig = Field(default_factory=SchedulerConfig)
+    notifications: NotificationsConfig = Field(default_factory=NotificationsConfig)
     monitors: List[MonitorConfig] = Field(default_factory=list)
     channels: List[ChannelConfig] = Field(default_factory=list)
 
