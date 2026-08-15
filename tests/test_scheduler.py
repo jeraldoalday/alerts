@@ -70,6 +70,35 @@ def test_sync_monitors_creates_and_updates_by_name(db):
         assert monitors[0].interval_seconds == 15
 
 
+def test_sync_monitors_persists_channel_refs_on_create_and_update(db):
+    configs = [
+        MonitorConfig(
+            name="site", type="http", target="https://a.example.com", channels=["ops-slack"]
+        )
+    ]
+    with db.session() as session:
+        sync_monitors(session, configs)
+
+    with db.session() as session:
+        monitor = session.query(Monitor).filter_by(name="site").one()
+        assert monitor.channels == ["ops-slack"]
+
+    configs = [
+        MonitorConfig(
+            name="site",
+            type="http",
+            target="https://a.example.com",
+            channels=["ops-slack", "ops-email"],
+        )
+    ]
+    with db.session() as session:
+        sync_monitors(session, configs)
+
+    with db.session() as session:
+        monitor = session.query(Monitor).filter_by(name="site").one()
+        assert monitor.channels == ["ops-slack", "ops-email"]
+
+
 class _FakeChecker:
     def __init__(self, outcome: CheckOutcome):
         self._outcome = outcome
