@@ -314,6 +314,53 @@ async def test_scheduler_skips_dispatch_when_no_notifiers_configured(db):
         assert session.query(NotificationLog).count() == 0
 
 
+async def test_scheduler_skips_channel_with_no_matching_notifier(db):
+    with db.session() as session:
+        session.add(
+            _monitor(interval_seconds=60, failure_threshold=1, channels=["ops-slack", "ghost"])
+        )
+
+    fake_checker = _FakeChecker(CheckOutcome(success=False, error_message="connection refused"))
+    fake_notifier = _FakeNotifier()
+    scheduler = Scheduler(
+        db, checkers={MonitorType.HTTP: fake_checker}, notifiers={"ops-slack": fake_notifier}
+    )
+
+    run_task = asyncio.create_task(scheduler.run())
+    await asyncio.sleep(0.05)
+    await scheduler.stop()
+    await run_task
+
+    assert len(fake_notifier.messages_sent) == 1
+    with db.session() as session:
+        logs = session.query(NotificationLog).all()
+        assert {log.channel_name for log in logs} == {"ops-slack"}
+
+
+async def test_scheduler_does_not_resend_within_cooldown_on_later_checks(db):
+    with db.session() as session:
+        session.add(_monitor(interval_seconds=1, failure_threshold=1, channels=["ops-slack"]))
+
+    fake_checker = _FakeChecker(CheckOutcome(success=False, error_message="connection refused"))
+    fake_notifier = _FakeNotifier()
+    scheduler = Scheduler(
+        db,
+        checkers={MonitorType.HTTP: fake_checker},
+        notifiers={"ops-slack": fake_notifier},
+        cooldown_seconds=3600,
+    )
+
+    run_task = asyncio.create_task(scheduler.run())
+    await asyncio.sleep(1.2)
+    await scheduler.stop()
+    await run_task
+
+    assert fake_checker.calls >= 2
+    assert len(fake_notifier.messages_sent) == 1
+    with db.session() as session:
+        assert session.query(NotificationLog).count() == 1
+
+
 async def test_scheduler_stop_closes_notifiers(db):
     with db.session() as session:
         session.add(_monitor(interval_seconds=60))
