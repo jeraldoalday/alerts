@@ -1,0 +1,115 @@
+"""WSGI application serving the read-only monitor status dashboard.
+
+Plain WSGI rather than a framework, to match the project's minimal
+dependency footprint (SQLAlchemy/alembic/PyYAML/pydantic/httpx only). Routes
+are dispatched by a simple prefix check in `__call__`; each handler opens its
+own database session and returns before the response body is generated, so
+nothing holds the session open across the WSGI response iterator.
+"""
+from __future__ import annotations
+
+import json
+from typing import Any, Callable, Iterable, List, Tuple
+
+from alerts.db import Database
+from alerts.web import queries, render
+from alerts.web.stats import compute_uptime_stats
+
+StartResponse = Callable[[str, List[Tuple[str, str]]], Any]
+
+
+class DashboardApp:
+    def __init__(self, database: Database, recent_checks_limit: int = 50):
+        self._database = database
+        self._recent_checks_limit = recent_checks_limit
+
+    def __call__(self, environ: dict, start_response: StartResponse) -> Iterable[bytes]:
+        if environ.get("REQUEST_METHOD", "GET") != "GET":
+            return self._respond(start_response, "405 Method Not Allowed", b"method not allowed")
+
+        path = environ.get("PATH_INFO") or "/"
+
+        if path == "/":
+            return self._index(start_response)
+        if path == "/healthz":
+            return self._healthz(start_response)
+        if path == "/api/monitors":
+            return self._api_monitors(start_response)
+        if path.startswith("/monitors/"):
+            return self._monitor_detail(start_response, path[len("/monitors/") :])
+        return self._not_found(start_response)
+
+    def _index(self, start_response: StartResponse) -> Iterable[bytes]:
+        with self._database.session() as session:
+            rows = []
+            for monitor in queries.list_monitors(session):
+                checks = queries.recent_check_results(
+                    session, monitor.id, self._recent_checks_limit
+                )
+                stats = compute_uptime_stats(checks)
+                last_checked_at = checks[0].checked_at if checks else None
+                rows.append((monitor, stats, last_checked_at))
+            body = render.render_index(rows)
+        return self._respond_html(start_response, "200 OK", body)
+
+    def _monitor_detail(self, start_response: StartResponse, name: str) -> Iterable[bytes]:
+        with self._database.session() as session:
+            monitor = queries.get_monitor_by_name(session, name)
+            if monitor is None:
+                body = render.render_not_found(f"monitor {name!r} not found")
+                return self._respond_html(start_response, "404 Not Found", body)
+
+            checks = queries.recent_check_results(session, monitor.id, self._recent_checks_limit)
+            incidents = queries.recent_incidents(session, monitor.id)
+            stats = compute_uptime_stats(checks)
+            body = render.render_monitor_detail(monitor, stats, checks, incidents)
+        return self._respond_html(start_response, "200 OK", body)
+
+    def _api_monitors(self, start_response: StartResponse) -> Iterable[bytes]:
+        with self._database.session() as session:
+            payload = []
+            for monitor in queries.list_monitors(session):
+                checks = queries.recent_check_results(
+                    session, monitor.id, self._recent_checks_limit
+                )
+                stats = compute_uptime_stats(checks)
+                payload.append(
+                    {
+                        "name": monitor.name,
+                        "type": monitor.type.value,
+                        "state": monitor.state.value,
+                        "uptime_percentage": stats.uptime_percentage,
+                        "average_latency_ms": stats.average_latency_ms,
+                    }
+                )
+        return self._respond_json(start_response, "200 OK", {"monitors": payload})
+
+    def _healthz(self, start_response: StartResponse) -> Iterable[bytes]:
+        return self._respond_json(start_response, "200 OK", {"status": "ok"})
+
+    def _not_found(self, start_response: StartResponse) -> Iterable[bytes]:
+        return self._respond_html(start_response, "404 Not Found", render.render_not_found())
+
+    def _respond_html(self, start_response: StartResponse, status: str, body: str) -> Iterable[bytes]:
+        return self._respond(
+            start_response, status, body.encode("utf-8"), content_type="text/html; charset=utf-8"
+        )
+
+    def _respond_json(self, start_response: StartResponse, status: str, payload: dict) -> Iterable[bytes]:
+        return self._respond(
+            start_response,
+            status,
+            json.dumps(payload).encode("utf-8"),
+            content_type="application/json",
+        )
+
+    @staticmethod
+    def _respond(
+        start_response: StartResponse,
+        status: str,
+        body: bytes,
+        content_type: str = "text/plain; charset=utf-8",
+    ) -> Iterable[bytes]:
+        headers = [("Content-Type", content_type), ("Content-Length", str(len(body)))]
+        start_response(status, headers)
+        return [body]
