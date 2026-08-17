@@ -28,6 +28,12 @@ class NotificationsConfig(BaseModel):
     cooldown_seconds: int = Field(default=900, ge=1)
 
 
+class DashboardConfig(BaseModel):
+    enabled: bool = True
+    host: str = "127.0.0.1"
+    port: int = Field(default=8080, ge=1, le=65535)
+
+
 class MonitorConfig(BaseModel):
     name: str
     type: Literal["http", "tcp", "dns", "ssl"]
@@ -93,6 +99,7 @@ class AppConfig(BaseModel):
     database: DatabaseConfig = Field(default_factory=DatabaseConfig)
     scheduler: SchedulerConfig = Field(default_factory=SchedulerConfig)
     notifications: NotificationsConfig = Field(default_factory=NotificationsConfig)
+    dashboard: DashboardConfig = Field(default_factory=DashboardConfig)
     monitors: List[MonitorConfig] = Field(default_factory=list)
     channels: List[ChannelConfig] = Field(default_factory=list)
 

@@ -52,6 +52,38 @@ def test_notifications_cooldown_is_configurable(tmp_path):
     assert config.notifications.cooldown_seconds == 60
 
 
+def test_dashboard_defaults_when_unset(tmp_path):
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(VALID_CONFIG)
+
+    config = load_config(config_file)
+
+    assert config.dashboard.enabled is True
+    assert config.dashboard.host == "127.0.0.1"
+    assert config.dashboard.port == 8080
+
+
+def test_dashboard_settings_are_configurable(tmp_path):
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(
+        VALID_CONFIG + "\ndashboard:\n  enabled: false\n  host: 0.0.0.0\n  port: 9000\n"
+    )
+
+    config = load_config(config_file)
+
+    assert config.dashboard.enabled is False
+    assert config.dashboard.host == "0.0.0.0"
+    assert config.dashboard.port == 9000
+
+
+def test_dashboard_port_out_of_range_rejected(tmp_path):
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(VALID_CONFIG + "\ndashboard:\n  port: 70000\n")
+
+    with pytest.raises(ConfigError):
+        load_config(config_file)
+
+
 def test_scheduler_default_interval_backfills_monitors_that_omit_it(tmp_path):
     config_file = tmp_path / "config.yaml"
     config_file.write_text(
