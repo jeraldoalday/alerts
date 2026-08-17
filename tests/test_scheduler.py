@@ -183,6 +183,40 @@ async def test_scheduler_opens_incident_when_monitor_crosses_failure_threshold(d
         assert incident.cause == "connection refused"
 
 
+class _DeletingChecker:
+    """A checker whose `check()` deletes the monitor mid-flight.
+
+    Exercises the scheduler's defensive `monitor is None` guard that fires
+    when a monitor is removed between the check running and its result
+    being persisted -- a race that's otherwise nearly impossible to hit
+    deterministically in a test.
+    """
+
+    def __init__(self, database):
+        self._database = database
+
+    async def check(self, **kwargs) -> CheckOutcome:
+        with self._database.session() as session:
+            session.query(Monitor).delete()
+        return CheckOutcome(success=True, latency_ms=1.0, status_code=200)
+
+
+async def test_scheduler_skips_persisting_result_when_monitor_deleted_during_check(db):
+    with db.session() as session:
+        session.add(_monitor(interval_seconds=60))
+
+    checker = _DeletingChecker(db)
+    scheduler = Scheduler(db, checkers={MonitorType.HTTP: checker})
+
+    run_task = asyncio.create_task(scheduler.run())
+    await asyncio.sleep(0.05)
+    await scheduler.stop()
+    await run_task
+
+    with db.session() as session:
+        assert session.query(CheckResult).count() == 0
+
+
 async def test_scheduler_runs_checks_again_after_interval_elapses(db):
     with db.session() as session:
         session.add(_monitor(interval_seconds=1))
