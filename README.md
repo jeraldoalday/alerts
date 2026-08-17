@@ -3,7 +3,8 @@
 A self-hosted uptime and service monitoring tool. It periodically checks
 HTTP endpoints, TCP ports, DNS records, and SSL certificate expiry, tracks
 each monitor's state (up / degraded / down), and notifies Slack, email, or
-a generic webhook when something changes.
+a generic webhook when something changes. A read-only web dashboard shows
+current status, uptime, and incident history.
 
 ## Status
 
@@ -17,7 +18,7 @@ Early development. Current state:
 - [x] Incident lifecycle (open/resolve on top of monitor state)
 - [x] Notification engine (dedup, cooldown, escalation)
 - [x] Slack / email / webhook notifiers
-- [ ] Web dashboard
+- [x] Web dashboard
 
 See open issues and commit history for day-to-day progress.
 
@@ -37,6 +38,28 @@ pytest -q
 alembic upgrade head
 ```
 
+Run the checker scheduler:
+
+```bash
+alerts run --config config.yaml
+```
+
+Run the read-only web dashboard (separate process, same database):
+
+```bash
+alerts serve --config config.yaml
+```
+
+The dashboard listens on `dashboard.host:dashboard.port` from the config
+(default `127.0.0.1:8080`) and serves:
+
+- `/` — all monitors, current state, uptime %, and average latency
+- `/monitors/<name>` — one monitor's recent checks and incident history
+- `/api/monitors` — JSON summary of all monitors
+- `/api/monitors/<name>` — JSON detail for one monitor, including recent
+  checks and incidents
+- `/healthz` — liveness check for the dashboard process itself
+
 ## Project layout
 
 ```
@@ -49,7 +72,8 @@ src/alerts/
   incidents.py    # Opens/resolves Incident records on DOWN/UP transitions
   notifications.py  # Dedup/cooldown/escalation decisions for open incidents
   notifiers/      # Per-channel senders (Slack, webhook, email) + registry
-  cli.py          # `alerts run` entrypoint
+  web/            # Read-only dashboard: WSGI app, HTML rendering, queries
+  cli.py          # `alerts run` / `alerts serve` entrypoints
 migrations/       # Alembic migrations
 tests/
 ```
