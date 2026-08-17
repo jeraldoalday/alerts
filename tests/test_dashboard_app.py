@@ -125,3 +125,33 @@ def test_api_monitors_returns_empty_list_when_no_monitors(db):
     _, _, body = _call(app, "/api/monitors")
 
     assert json.loads(body) == {"monitors": []}
+
+
+def test_api_monitor_detail_returns_checks_and_incidents(db):
+    with db.session() as session:
+        monitor = _monitor(session, name="site", state=MonitorState.UP)
+        session.add(CheckResult(monitor_id=monitor.id, success=True, latency_ms=15.0, status_code=200))
+
+    app = DashboardApp(db)
+    status, headers, body = _call(app, "/api/monitors/site")
+
+    assert status == "200 OK"
+    assert headers["Content-Type"] == "application/json"
+    payload = json.loads(body)
+    assert payload["name"] == "site"
+    assert payload["type"] == "http"
+    assert payload["state"] == "up"
+    assert payload["uptime_percentage"] == 100.0
+    assert len(payload["recent_checks"]) == 1
+    assert payload["recent_checks"][0]["success"] is True
+    assert payload["incidents"] == []
+
+
+def test_api_monitor_detail_returns_404_json_for_unknown_monitor(db):
+    app = DashboardApp(db)
+
+    status, headers, body = _call(app, "/api/monitors/ghost")
+
+    assert status == "404 Not Found"
+    assert headers["Content-Type"] == "application/json"
+    assert json.loads(body) == {"error": "monitor 'ghost' not found"}

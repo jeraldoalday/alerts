@@ -9,7 +9,7 @@ nothing holds the session open across the WSGI response iterator.
 from __future__ import annotations
 
 import json
-from typing import Any, Callable, Iterable, List, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Tuple
 
 from alerts.db import Database
 from alerts.web import queries, render
@@ -35,6 +35,8 @@ class DashboardApp:
             return self._healthz(start_response)
         if path == "/api/monitors":
             return self._api_monitors(start_response)
+        if path.startswith("/api/monitors/"):
+            return self._api_monitor_detail(start_response, path[len("/api/monitors/") :])
         if path.startswith("/monitors/"):
             return self._monitor_detail(start_response, path[len("/monitors/") :])
         return self._not_found(start_response)
@@ -64,6 +66,47 @@ class DashboardApp:
             stats = compute_uptime_stats(checks)
             body = render.render_monitor_detail(monitor, stats, checks, incidents)
         return self._respond_html(start_response, "200 OK", body)
+
+    def _api_monitor_detail(self, start_response: StartResponse, name: str) -> Iterable[bytes]:
+        with self._database.session() as session:
+            monitor = queries.get_monitor_by_name(session, name)
+            if monitor is None:
+                error_payload = {"error": f"monitor {name!r} not found"}
+                return self._respond_json(start_response, "404 Not Found", error_payload)
+
+            checks = queries.recent_check_results(session, monitor.id, self._recent_checks_limit)
+            incidents = queries.recent_incidents(session, monitor.id)
+            stats = compute_uptime_stats(checks)
+            payload: Dict[str, Any] = {
+                "name": monitor.name,
+                "type": monitor.type.value,
+                "target": monitor.target,
+                "state": monitor.state.value,
+                "uptime_percentage": stats.uptime_percentage,
+                "average_latency_ms": stats.average_latency_ms,
+                "recent_checks": [
+                    {
+                        "checked_at": check.checked_at.isoformat(),
+                        "success": check.success,
+                        "latency_ms": check.latency_ms,
+                        "status_code": check.status_code,
+                        "error_message": check.error_message,
+                    }
+                    for check in checks
+                ],
+                "incidents": [
+                    {
+                        "state": incident.state.value,
+                        "started_at": incident.started_at.isoformat(),
+                        "resolved_at": (
+                            incident.resolved_at.isoformat() if incident.resolved_at else None
+                        ),
+                        "cause": incident.cause,
+                    }
+                    for incident in incidents
+                ],
+            }
+        return self._respond_json(start_response, "200 OK", payload)
 
     def _api_monitors(self, start_response: StartResponse) -> Iterable[bytes]:
         with self._database.session() as session:
