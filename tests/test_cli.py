@@ -22,6 +22,49 @@ def test_parse_args_run_accepts_custom_config_path():
     assert args.config == "other.yaml"
 
 
+def test_parse_args_serve_defaults_to_config_yaml():
+    args = cli._parse_args(["serve"])
+
+    assert args.command == "serve"
+    assert args.config == "config.yaml"
+
+
+def test_parse_args_serve_accepts_custom_config_path():
+    args = cli._parse_args(["serve", "--config", "other.yaml"])
+
+    assert args.config == "other.yaml"
+
+
+def test_main_serve_builds_database_and_calls_serve_with_dashboard_settings(tmp_path, monkeypatch):
+    config_file = tmp_path / "config.yaml"
+    db_path = tmp_path / "test.db"
+    config_file.write_text(
+        f"""
+database:
+  url: sqlite:///{db_path}
+
+dashboard:
+  host: 0.0.0.0
+  port: 9090
+"""
+    )
+
+    captured = {}
+
+    def fake_serve(database, host, port):
+        captured["database"] = database
+        captured["host"] = host
+        captured["port"] = port
+
+    monkeypatch.setattr(cli, "serve", fake_serve)
+
+    cli.main(["serve", "--config", str(config_file)])
+
+    assert isinstance(captured["database"], cli.Database)
+    assert captured["host"] == "0.0.0.0"
+    assert captured["port"] == 9090
+
+
 def test_main_run_completes_when_no_monitors_are_configured(tmp_path):
     config_path = _write_config(tmp_path)
 
