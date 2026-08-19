@@ -10,7 +10,7 @@ import asyncio
 import logging
 from typing import Dict, Iterable, List, Optional
 
-from alerts.checkers.base import Checker, CheckOutcome
+from alerts.checkers.base import Checker, CheckOutcome, CheckRequest
 from alerts.checkers.dns import DnsChecker
 from alerts.checkers.http import HttpChecker
 from alerts.checkers.ssl import SslChecker
@@ -257,13 +257,9 @@ class Scheduler:
                 if monitor is None or not monitor.enabled:
                     return
                 checker = self._checkers[monitor.type]
-                target = monitor.target
-                timeout_seconds = monitor.timeout_seconds
-                expected_status = monitor.expected_status
+                request = CheckRequest.from_monitor(monitor)
 
-            outcome = await checker.check(
-                target=target, timeout_seconds=timeout_seconds, expected_status=expected_status
-            )
+            outcome = await checker.check(request)
 
             with self._database.session() as session:
                 monitor = session.get(Monitor, monitor_id)

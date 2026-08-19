@@ -4,7 +4,7 @@ import asyncio
 import time
 from typing import Any, Awaitable, Callable, Optional
 
-from alerts.checkers.base import CheckOutcome
+from alerts.checkers.base import CheckOutcome, CheckRequest
 
 Resolver = Callable[[str], Awaitable[Any]]
 
@@ -24,12 +24,11 @@ class DnsChecker:
     def __init__(self, resolver: Optional[Resolver] = None):
         self._resolver = resolver or _default_resolver
 
-    async def check(
-        self, *, target: str, timeout_seconds: float, expected_status: int
-    ) -> CheckOutcome:
+    async def check(self, request: CheckRequest) -> CheckOutcome:
+        timeout_seconds = request.timeout_seconds
         start = time.monotonic()
         try:
-            await asyncio.wait_for(self._resolver(target), timeout=timeout_seconds)
+            await asyncio.wait_for(self._resolver(request.target), timeout=timeout_seconds)
         except asyncio.TimeoutError:
             return CheckOutcome(
                 success=False, error_message=f"DNS lookup timed out after {timeout_seconds}s"

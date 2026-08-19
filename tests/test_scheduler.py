@@ -1,6 +1,6 @@
 import asyncio
 
-from alerts.checkers.base import CheckOutcome
+from alerts.checkers.base import CheckOutcome, CheckRequest
 from alerts.checkers.http import HttpChecker
 from alerts.config import MonitorConfig
 from alerts.models import (
@@ -115,7 +115,7 @@ class _FakeChecker:
         self._outcome = outcome
         self.calls = 0
 
-    async def check(self, **kwargs) -> CheckOutcome:
+    async def check(self, request: CheckRequest) -> CheckOutcome:
         self.calls += 1
         return self._outcome
 
@@ -196,7 +196,7 @@ class _DeletingChecker:
     def __init__(self, database):
         self._database = database
 
-    async def check(self, **kwargs) -> CheckOutcome:
+    async def check(self, request: CheckRequest) -> CheckOutcome:
         with self._database.session() as session:
             session.query(Monitor).delete()
         return CheckOutcome(success=True, latency_ms=1.0, status_code=200)
@@ -420,7 +420,7 @@ class _ExplodingChecker:
     def __init__(self):
         self.calls = 0
 
-    async def check(self, *, target, timeout_seconds, expected_status):
+    async def check(self, request: CheckRequest) -> CheckOutcome:
         self.calls += 1
         raise RuntimeError("checker blew up")
 
@@ -433,11 +433,9 @@ class _DispatchingChecker:
         self._exploding = _ExplodingChecker()
         self.healthy_calls = 0
 
-    async def check(self, *, target, timeout_seconds, expected_status):
-        if target == self._exploding_target:
-            return await self._exploding.check(
-                target=target, timeout_seconds=timeout_seconds, expected_status=expected_status
-            )
+    async def check(self, request: CheckRequest) -> CheckOutcome:
+        if request.target == self._exploding_target:
+            return await self._exploding.check(request)
         self.healthy_calls += 1
         return CheckOutcome(success=True, latency_ms=5.0, status_code=200)
 

@@ -2,7 +2,39 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional, Protocol
+from typing import TYPE_CHECKING, Optional, Protocol
+
+if TYPE_CHECKING:
+    from alerts.models import Monitor
+
+
+@dataclass(frozen=True)
+class CheckRequest:
+    """Everything a checker needs to run one check against a target.
+
+    Passed as a single object rather than as keyword arguments so that adding
+    a per-protocol assertion doesn't ripple through every checker signature
+    and every caller. A checker ignores the fields that don't apply to it --
+    `expected_status` means nothing to a DNS lookup -- which is why the
+    protocol-specific ones all carry defaults.
+    """
+
+    target: str
+    timeout_seconds: float
+    expected_status: int = 200
+
+    @classmethod
+    def from_monitor(cls, monitor: "Monitor") -> "CheckRequest":
+        """Build a request from a monitor row.
+
+        Reads every field eagerly so the caller can build the request inside
+        a database session and run the check itself outside of one.
+        """
+        return cls(
+            target=monitor.target,
+            timeout_seconds=monitor.timeout_seconds,
+            expected_status=monitor.expected_status,
+        )
 
 
 @dataclass(frozen=True)
@@ -18,6 +50,4 @@ class CheckOutcome:
 class Checker(Protocol):
     """Runs a single check against a target and reports the outcome."""
 
-    async def check(
-        self, *, target: str, timeout_seconds: float, expected_status: int
-    ) -> CheckOutcome: ...
+    async def check(self, request: CheckRequest) -> CheckOutcome: ...

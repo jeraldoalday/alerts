@@ -4,7 +4,7 @@ import asyncio
 import time
 from typing import Tuple
 
-from alerts.checkers.base import CheckOutcome
+from alerts.checkers.base import CheckOutcome, CheckRequest
 
 
 def _split_host_port(target: str) -> Tuple[str, int]:
@@ -17,18 +17,16 @@ def _split_host_port(target: str) -> Tuple[str, int]:
 class TcpChecker:
     """Checks a TCP target ("host:port") by attempting to open a connection."""
 
-    async def check(
-        self, *, target: str, timeout_seconds: float, expected_status: int
-    ) -> CheckOutcome:
+    async def check(self, request: CheckRequest) -> CheckOutcome:
         try:
-            host, port = _split_host_port(target)
+            host, port = _split_host_port(request.target)
         except ValueError as exc:
             return CheckOutcome(success=False, error_message=str(exc))
 
         start = time.monotonic()
         try:
             _, writer = await asyncio.wait_for(
-                asyncio.open_connection(host, port), timeout=timeout_seconds
+                asyncio.open_connection(host, port), timeout=request.timeout_seconds
             )
         except (OSError, asyncio.TimeoutError) as exc:
             return CheckOutcome(success=False, error_message=str(exc) or type(exc).__name__)

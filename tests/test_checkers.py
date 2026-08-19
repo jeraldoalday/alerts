@@ -1,5 +1,6 @@
 import httpx
 
+from alerts.checkers.base import CheckRequest
 from alerts.checkers.http import HttpChecker
 
 
@@ -11,7 +12,7 @@ def _checker(handler) -> HttpChecker:
 async def test_http_checker_success_on_expected_status():
     checker = _checker(lambda request: httpx.Response(200))
 
-    outcome = await checker.check(target="https://example.com", timeout_seconds=5, expected_status=200)
+    outcome = await checker.check(CheckRequest(target="https://example.com", timeout_seconds=5))
 
     assert outcome.success is True
     assert outcome.status_code == 200
@@ -22,7 +23,7 @@ async def test_http_checker_success_on_expected_status():
 async def test_http_checker_fails_on_unexpected_status():
     checker = _checker(lambda request: httpx.Response(503))
 
-    outcome = await checker.check(target="https://example.com", timeout_seconds=5, expected_status=200)
+    outcome = await checker.check(CheckRequest(target="https://example.com", timeout_seconds=5))
 
     assert outcome.success is False
     assert outcome.status_code == 503
@@ -36,7 +37,7 @@ async def test_http_checker_reports_connection_errors():
 
     checker = _checker(handler)
 
-    outcome = await checker.check(target="https://example.com", timeout_seconds=5, expected_status=200)
+    outcome = await checker.check(CheckRequest(target="https://example.com", timeout_seconds=5))
 
     assert outcome.success is False
     assert outcome.status_code is None
@@ -49,7 +50,7 @@ async def test_http_checker_reports_timeouts():
 
     checker = _checker(handler)
 
-    outcome = await checker.check(target="https://example.com", timeout_seconds=5, expected_status=200)
+    outcome = await checker.check(CheckRequest(target="https://example.com", timeout_seconds=5))
 
     assert outcome.success is False
     assert "timed out" in outcome.error_message
@@ -71,3 +72,25 @@ async def test_aclose_leaves_an_injected_client_open():
 
     assert client.is_closed is False
     await client.aclose()
+
+
+def test_check_request_reads_a_monitor_row():
+    from alerts.models import Monitor, MonitorType
+
+    monitor = Monitor(
+        name="site",
+        type=MonitorType.HTTP,
+        target="https://example.com",
+        timeout_seconds=7,
+        expected_status=204,
+    )
+
+    request = CheckRequest.from_monitor(monitor)
+
+    assert request.target == "https://example.com"
+    assert request.timeout_seconds == 7
+    assert request.expected_status == 204
+
+
+def test_check_request_defaults_expected_status():
+    assert CheckRequest(target="https://example.com", timeout_seconds=5).expected_status == 200

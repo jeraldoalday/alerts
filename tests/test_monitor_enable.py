@@ -7,7 +7,7 @@ carries on checking it forever.
 """
 import asyncio
 
-from alerts.checkers.base import CheckOutcome
+from alerts.checkers.base import CheckOutcome, CheckRequest
 from alerts.config import MonitorConfig
 from alerts.models import (
     CheckResult,
@@ -45,7 +45,7 @@ class _StubChecker:
     def __init__(self):
         self.calls = 0
 
-    async def check(self, *, target, timeout_seconds, expected_status):
+    async def check(self, request: CheckRequest) -> CheckOutcome:
         self.calls += 1
         return CheckOutcome(success=True, latency_ms=1.0, status_code=200)
 

@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta, timezone
 
+from alerts.checkers.base import CheckRequest
 from alerts.checkers.ssl import SslChecker, _evaluate_certificate
 
 
@@ -37,7 +38,7 @@ async def test_ssl_checker_reports_connection_errors():
         raise ConnectionRefusedError("connection refused")
 
     checker = SslChecker(fetch_certificate=failing_fetch)
-    outcome = await checker.check(target="example.com:443", timeout_seconds=2, expected_status=200)
+    outcome = await checker.check(CheckRequest(target="example.com:443", timeout_seconds=2))
 
     assert outcome.success is False
     assert "connection refused" in outcome.error_message
@@ -47,7 +48,7 @@ async def test_ssl_checker_rejects_malformed_target():
     checker = SslChecker()
 
     outcome = await checker.check(
-        target="example.com:notaport", timeout_seconds=2, expected_status=200
+        CheckRequest(target="example.com:notaport", timeout_seconds=2)
     )
 
     assert outcome.success is False
@@ -61,6 +62,6 @@ async def test_ssl_checker_uses_injected_certificate():
         return _cert(not_after)
 
     checker = SslChecker(fetch_certificate=fake_fetch)
-    outcome = await checker.check(target="example.com", timeout_seconds=2, expected_status=200)
+    outcome = await checker.check(CheckRequest(target="example.com", timeout_seconds=2))
 
     assert outcome.success is True

@@ -5,7 +5,7 @@ from typing import Optional
 
 import httpx
 
-from alerts.checkers.base import CheckOutcome
+from alerts.checkers.base import CheckOutcome, CheckRequest
 
 
 class HttpChecker:
@@ -19,21 +19,22 @@ class HttpChecker:
         self._client = client or httpx.AsyncClient(follow_redirects=True)
         self._owns_client = client is None
 
-    async def check(
-        self, *, target: str, timeout_seconds: float, expected_status: int
-    ) -> CheckOutcome:
+    async def check(self, request: CheckRequest) -> CheckOutcome:
+        timeout_seconds = request.timeout_seconds
         start = time.monotonic()
         try:
-            response = await self._client.get(target, timeout=timeout_seconds)
+            response = await self._client.get(request.target, timeout=timeout_seconds)
         except httpx.TimeoutException:
             return CheckOutcome(success=False, error_message=f"timed out after {timeout_seconds}s")
         except httpx.HTTPError as exc:
             return CheckOutcome(success=False, error_message=str(exc) or type(exc).__name__)
 
         latency_ms = (time.monotonic() - start) * 1000
-        success = response.status_code == expected_status
+        success = response.status_code == request.expected_status
         error_message = (
-            None if success else f"expected status {expected_status}, got {response.status_code}"
+            None
+            if success
+            else f"expected status {request.expected_status}, got {response.status_code}"
         )
         return CheckOutcome(
             success=success,

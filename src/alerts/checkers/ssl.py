@@ -6,7 +6,7 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Dict, Optional, Tuple
 
-from alerts.checkers.base import CheckOutcome
+from alerts.checkers.base import CheckOutcome, CheckRequest
 
 CertificateFetcher = Callable[[str, int], Awaitable[Dict[str, Any]]]
 
@@ -59,18 +59,16 @@ class SslChecker:
     def __init__(self, fetch_certificate: Optional[CertificateFetcher] = None):
         self._fetch_certificate = fetch_certificate or _fetch_certificate
 
-    async def check(
-        self, *, target: str, timeout_seconds: float, expected_status: int
-    ) -> CheckOutcome:
+    async def check(self, request: CheckRequest) -> CheckOutcome:
         try:
-            host, port = _split_host_port(target)
+            host, port = _split_host_port(request.target)
         except ValueError as exc:
             return CheckOutcome(success=False, error_message=str(exc))
 
         start = time.monotonic()
         try:
             cert = await asyncio.wait_for(
-                self._fetch_certificate(host, port), timeout=timeout_seconds
+                self._fetch_certificate(host, port), timeout=request.timeout_seconds
             )
         except (OSError, ssl_module.SSLError, asyncio.TimeoutError) as exc:
             return CheckOutcome(success=False, error_message=str(exc) or type(exc).__name__)
