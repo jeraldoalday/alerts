@@ -8,6 +8,7 @@ name, and the value is resolved at load time.
 from __future__ import annotations
 
 import os
+from datetime import datetime, time
 from pathlib import Path
 from typing import Any, List, Literal, Optional, Union
 
@@ -47,6 +48,98 @@ class DashboardConfig(BaseModel):
     enabled: bool = True
     host: str = "127.0.0.1"
     port: int = Field(default=8080, ge=1, le=65535)
+
+
+WEEKDAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
+
+
+class MaintenanceWindowConfig(BaseModel):
+    """A span during which a monitor's notifications are suppressed.
+
+    Declared one of two ways, and exactly one of them:
+
+    - recurring: `start` (UTC "HH:MM") plus `duration_minutes`, optionally
+      narrowed to certain `days`. A window may run past midnight; the day it
+      is matched against is the day it *starts* on.
+    - fixed: `starts_at` and `ends_at`, for a one-off change window that
+      doesn't repeat.
+
+    `monitors` scopes the window to specific monitors by name; omitting it
+    covers every monitor, which is what a whole-estate maintenance window
+    usually means.
+
+    Checks keep running and results keep being recorded throughout -- the
+    window suppresses alerting, not monitoring, so the history of what a
+    deploy did to a service is still there afterwards.
+    """
+
+    name: str
+    monitors: List[str] = Field(default_factory=list)
+    days: List[str] = Field(default_factory=list)
+    start: Optional[time] = None
+    duration_minutes: Optional[int] = Field(default=None, ge=1)
+    starts_at: Optional[datetime] = None
+    ends_at: Optional[datetime] = None
+
+    @field_validator("days")
+    @classmethod
+    def days_are_known_weekdays(cls, days: List[str]) -> List[str]:
+        normalised = [day.strip().lower()[:3] for day in days]
+        unknown = [day for day in normalised if day not in WEEKDAYS]
+        if unknown:
+            raise ValueError(f"unknown day(s) {unknown}, expected any of {list(WEEKDAYS)}")
+        return normalised
+
+    @model_validator(mode="after")
+    def exactly_one_form(self) -> "MaintenanceWindowConfig":
+        recurring = self.start is not None or self.duration_minutes is not None
+        fixed = self.starts_at is not None or self.ends_at is not None
+
+        if recurring and fixed:
+            raise ValueError(
+                f"maintenance window {self.name!r} mixes the recurring form "
+                "(start/duration_minutes) with the fixed form (starts_at/ends_at); "
+                "use one or the other"
+            )
+        if recurring:
+            if self.start is None or self.duration_minutes is None:
+                raise ValueError(
+                    f"maintenance window {self.name!r} needs both start and "
+                    "duration_minutes"
+                )
+            return self
+        if fixed:
+            if self.starts_at is None or self.ends_at is None:
+                raise ValueError(
+                    f"maintenance window {self.name!r} needs both starts_at and ends_at"
+                )
+            if self.ends_at <= self.starts_at:
+                raise ValueError(
+                    f"maintenance window {self.name!r} ends at or before it starts"
+                )
+            if self.days:
+                raise ValueError(
+                    f"maintenance window {self.name!r} sets days on a fixed window, "
+                    "which already names the exact dates it covers"
+                )
+            return self
+        raise ValueError(
+            f"maintenance window {self.name!r} declares no schedule: give it either "
+            "start + duration_minutes or starts_at + ends_at"
+        )
+
+    @property
+    def is_recurring(self) -> bool:
+        return self.start is not None
+
+    def applies_to(self, monitor_name: str) -> bool:
+        """Whether this window covers a given monitor.
+
+        An empty `monitors` list covers everything: a window declared without
+        naming any monitor is an estate-wide one, not a window that covers
+        nothing at all.
+        """
+        return not self.monitors or monitor_name in self.monitors
 
 
 class MonitorConfig(BaseModel):
@@ -159,6 +252,7 @@ class AppConfig(BaseModel):
     dashboard: DashboardConfig = Field(default_factory=DashboardConfig)
     monitors: List[MonitorConfig] = Field(default_factory=list)
     channels: List[ChannelConfig] = Field(default_factory=list)
+    maintenance: List[MaintenanceWindowConfig] = Field(default_factory=list)
 
     @model_validator(mode="before")
     @classmethod
@@ -217,6 +311,22 @@ class AppConfig(BaseModel):
                     f"monitor {monitor.name!r} references unknown channel(s): {unknown}"
                 )
 
+    def validate_maintenance_monitor_refs(self) -> None:
+        """Reject a maintenance window naming a monitor that doesn't exist.
+
+        A typo here fails silently and expensively: the window looks
+        configured, suppresses nothing, and the first anyone hears of it is
+        being paged during the change it was meant to cover.
+        """
+        known = {m.name for m in self.monitors}
+        for window in self.maintenance:
+            unknown = [name for name in window.monitors if name not in known]
+            if unknown:
+                raise ValueError(
+                    f"maintenance window {window.name!r} references unknown "
+                    f"monitor(s): {unknown}"
+                )
+
 
 class ConfigError(Exception):
     """Raised for missing files, invalid YAML, or failed validation."""
@@ -242,6 +352,7 @@ def load_config(path: Union[str, Path]) -> AppConfig:
     try:
         config = AppConfig.model_validate(raw)
         config.validate_monitor_channel_refs()
+        config.validate_maintenance_monitor_refs()
     except Exception as exc:  # pydantic.ValidationError or ValueError
         raise ConfigError(f"invalid config in {config_path}: {exc}") from exc
 

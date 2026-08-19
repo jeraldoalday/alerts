@@ -30,6 +30,26 @@ dashboard:
   host: 127.0.0.1
   port: 8080
 
+maintenance:
+  # Planned windows during which a monitor's channels are not notified.
+  # Checks still run and results are still recorded -- this suppresses
+  # alerting, not monitoring, so you can see afterwards what the change did.
+  # Omit `monitors` to cover every monitor.
+
+  # Recurring: `start` is UTC "HH:MM" and the window may run past midnight,
+  # in which case it belongs to the day it starts on. Omit `days` for daily.
+  - name: nightly-db-patch
+    monitors: [main-site]
+    days: [sun]
+    start: "02:00"
+    duration_minutes: 90
+
+  # One-off: an exact span, for a change that isn't on a schedule.
+  - name: gateway-migration
+    monitors: [api-gateway]
+    starts_at: 2026-09-01T01:00:00Z
+    ends_at: 2026-09-01T05:00:00Z
+
 monitors:
   - name: main-site
     type: http
