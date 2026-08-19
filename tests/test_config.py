@@ -1,5 +1,6 @@
 
 import pytest
+import yaml
 
 from alerts.config import ConfigError, EmailChannelConfig, load_config
 
@@ -19,6 +20,13 @@ channels:
     type: slack
     webhook_url_env: SLACK_WEBHOOK_URL
 """
+
+
+def _write_and_load(tmp_path, raw: dict):
+    """Load a config from a dict, for cases where building YAML by hand is noise."""
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(yaml.safe_dump(raw))
+    return load_config(config_file)
 
 
 def test_load_valid_config(tmp_path):
@@ -252,3 +260,69 @@ def test_email_channel_credentials_are_none_without_env_vars():
 
     assert channel.username is None
     assert channel.password is None
+
+
+def test_monitor_degraded_latency_defaults_to_none(tmp_path):
+    config = _write_and_load(
+        tmp_path,
+        {"monitors": [{"name": "m", "type": "http", "target": "https://example.com"}]},
+    )
+
+    assert config.monitors[0].degraded_latency_ms is None
+
+
+def test_monitor_degraded_latency_is_loaded(tmp_path):
+    config = _write_and_load(
+        tmp_path,
+        {
+            "monitors": [
+                {
+                    "name": "m",
+                    "type": "http",
+                    "target": "https://example.com",
+                    "timeout_seconds": 5,
+                    "degraded_latency_ms": 1500,
+                }
+            ]
+        },
+    )
+
+    assert config.monitors[0].degraded_latency_ms == 1500
+
+
+def test_monitor_degraded_latency_must_be_positive(tmp_path):
+    with pytest.raises(ConfigError):
+        _write_and_load(
+            tmp_path,
+            {
+                "monitors": [
+                    {
+                        "name": "m",
+                        "type": "http",
+                        "target": "https://example.com",
+                        "degraded_latency_ms": 0,
+                    }
+                ]
+            },
+        )
+
+
+def test_monitor_degraded_latency_above_timeout_is_rejected(tmp_path):
+    """A budget the timeout can never let a check reach is a config mistake."""
+    with pytest.raises(ConfigError) as excinfo:
+        _write_and_load(
+            tmp_path,
+            {
+                "monitors": [
+                    {
+                        "name": "slow-site",
+                        "type": "http",
+                        "target": "https://example.com",
+                        "timeout_seconds": 2,
+                        "degraded_latency_ms": 2000,
+                    }
+                ]
+            },
+        )
+
+    assert "degraded_latency_ms" in str(excinfo.value)

@@ -30,6 +30,10 @@ monitors:
     expected_status: 200
     failure_threshold: 3
     recovery_threshold: 2
+    # A check that succeeds but takes at least this long marks the monitor
+    # degraded instead of up. Must stay below timeout_seconds -- anything
+    # slower than the timeout is recorded as a failure, not a slow success.
+    degraded_latency_ms: 1500
     channels: [ops-slack, ops-email]
 
   - name: api-gateway

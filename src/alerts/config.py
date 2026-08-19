@@ -43,7 +43,29 @@ class MonitorConfig(BaseModel):
     expected_status: int = 200
     failure_threshold: int = Field(default=3, ge=1)
     recovery_threshold: int = Field(default=2, ge=1)
+    degraded_latency_ms: Optional[float] = Field(default=None, gt=0)
     channels: List[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def latency_budget_is_reachable(self) -> "MonitorConfig":
+        """Reject a degraded threshold the timeout can never let a check reach.
+
+        A check that runs past `timeout_seconds` is recorded as a failure, not
+        a slow success, so a `degraded_latency_ms` at or above the timeout
+        would never mark anything degraded -- it would silently do nothing,
+        which is worse than being told about it at load time.
+        """
+        if (
+            self.degraded_latency_ms is not None
+            and self.degraded_latency_ms >= self.timeout_seconds * 1000
+        ):
+            raise ValueError(
+                f"monitor {self.name!r} sets degraded_latency_ms="
+                f"{self.degraded_latency_ms} at or above its timeout_seconds="
+                f"{self.timeout_seconds} ({self.timeout_seconds * 1000}ms), so no "
+                "successful check could ever be slow enough to trigger it"
+            )
+        return self
 
     @field_validator("name")
     @classmethod
