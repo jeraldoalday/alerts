@@ -113,6 +113,7 @@ def test_api_monitors_returns_json_summary(db):
             "name": "api-site",
             "type": "http",
             "state": "down",
+            "paused": False,
             "degraded_latency_ms": None,
             "uptime_percentage": 0.0,
             "average_latency_ms": None,

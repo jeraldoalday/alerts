@@ -35,10 +35,18 @@ class StatusRow:
     average_latency_ms: Optional[float]
     last_checked_at: Optional[datetime]
     open_incident_since: Optional[datetime]
+    paused: bool = False
 
     @property
     def is_down(self) -> bool:
-        return self.state == MonitorState.DOWN
+        """Whether this row should fail `alerts status --exit-code`.
+
+        A paused monitor is excluded however bad its last known state was:
+        the config stopped declaring it, nothing is checking it any more, and
+        failing a scripted check on a frozen state would keep an operator
+        chasing an outage that is no longer being observed.
+        """
+        return self.state == MonitorState.DOWN and not self.paused
 
 
 def _open_incident(session: Session, monitor_id: int) -> Optional[Incident]:
@@ -66,6 +74,7 @@ def collect_status_rows(session: Session, *, checks_window: int = 50) -> List[St
                 average_latency_ms=stats.average_latency_ms,
                 last_checked_at=checks[0].checked_at if checks else None,
                 open_incident_since=incident.started_at if incident else None,
+                paused=monitor.is_paused,
             )
         )
     return rows
@@ -93,6 +102,8 @@ def _relative_age(value: Optional[datetime], now: datetime) -> str:
 
 
 def _note(row: StatusRow, now: datetime) -> str:
+    if row.paused:
+        return "paused, not in config"
     if row.open_incident_since is None:
         return ""
     down_for = format_duration(
@@ -134,9 +145,21 @@ def format_status_table(rows: Sequence[StatusRow], *, now: Optional[datetime] = 
 
 
 def format_status_summary(rows: Sequence[StatusRow]) -> str:
-    """One-line tally of how many monitors sit in each state."""
+    """One-line tally of how many monitors sit in each state.
+
+    Paused monitors are tallied on their own rather than folded into their
+    last known state, for the same reason they don't fail `--exit-code`: that
+    state is a frozen reading, not a current one.
+    """
     counts = {state: 0 for state in MonitorState}
+    paused = 0
     for row in rows:
+        if row.paused:
+            paused += 1
+            continue
         counts[row.state] += 1
-    tally = ", ".join(f"{counts[state]} {state.value}" for state in MonitorState if counts[state])
+    parts = [f"{counts[state]} {state.value}" for state in MonitorState if counts[state]]
+    if paused:
+        parts.append(f"{paused} paused")
+    tally = ", ".join(parts)
     return f"{len(rows)} monitor(s): {tally}" if tally else f"{len(rows)} monitor(s)"

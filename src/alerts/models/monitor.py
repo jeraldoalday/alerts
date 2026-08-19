@@ -82,5 +82,17 @@ class Monitor(Base):
         back_populates="monitor", cascade="all, delete-orphan"
     )
 
+    @property
+    def is_paused(self) -> bool:
+        """Whether the config has stopped declaring this monitor.
+
+        Compares against False rather than testing falsiness so a Monitor
+        built in memory -- one whose column defaults a flush hasn't applied
+        yet -- reads as active, which is what it becomes once persisted. The
+        column is NOT NULL, so anything loaded from the database answers
+        truthfully either way.
+        """
+        return self.enabled is False
+
     def __repr__(self) -> str:
         return f"Monitor(id={self.id}, name={self.name!r}, state={self.state.value})"

@@ -60,6 +60,16 @@ def _url_path(monitor_name: str) -> str:
     return escape(quote(monitor_name, safe=""))
 
 
+def _paused_marker(monitor: Monitor) -> str:
+    """Marks a monitor the config no longer declares.
+
+    Its state, uptime, and last-checked column are all frozen at the moment
+    checking stopped, so without saying so the row reads as live data that
+    happens to have gone stale.
+    """
+    return '<span class="muted"> &middot; paused</span>' if monitor.is_paused else ""
+
+
 def _state_badge(state: MonitorState) -> str:
     color = _STATE_COLORS.get(state, _STATE_COLORS[MonitorState.UNKNOWN])
     return f'<span class="badge" style="background:{color}">{escape(state.value)}</span>'
@@ -107,6 +117,8 @@ def render_summary(summary: StateSummary) -> str:
     tiles.append(
         _summary_tile("open incidents", summary.open_incidents, _STATE_COLORS[MonitorState.DOWN])
     )
+    if summary.paused:
+        tiles.append(_summary_tile("paused", summary.paused))
     return f'<ul class="summary">{"".join(tiles)}</ul>'
 
 
@@ -118,7 +130,8 @@ def render_index(
     for monitor, stats, last_checked_at in rows:
         body_rows.append(
             "<tr>"
-            f'<td><a href="/monitors/{_url_path(monitor.name)}">{escape(monitor.name)}</a></td>'
+            f'<td><a href="/monitors/{_url_path(monitor.name)}">{escape(monitor.name)}</a>'
+            f"{_paused_marker(monitor)}</td>"
             f"<td>{escape(monitor.type.value)}</td>"
             f"<td>{_state_badge(monitor.state)}</td>"
             f"<td>{_format_percentage(stats.uptime_percentage)}</td>"
@@ -202,10 +215,17 @@ def render_monitor_detail(
         "</table>"
     )
 
+    paused_note = (
+        '<p class="muted">Paused: this monitor is no longer in the config, so nothing '
+        "below is being updated.</p>"
+        if monitor.is_paused
+        else ""
+    )
     body = (
         '<div class="nav"><a href="/">&larr; all monitors</a></div>'
         f"<h1>{escape(monitor.name)}</h1>"
         f'<p class="muted">{escape(monitor.type.value)} &middot; {escape(monitor.target)}</p>'
+        f"{paused_note}"
         f"<p>{_state_badge(monitor.state)} "
         f"&nbsp; uptime {_format_percentage(stats.uptime_percentage)} "
         f"&nbsp; avg latency {_format_latency(stats.average_latency_ms)}"

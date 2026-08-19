@@ -111,6 +111,7 @@ class DashboardApp:
                 "type": monitor.type.value,
                 "target": monitor.target,
                 "state": monitor.state.value,
+                "paused": monitor.is_paused,
                 "degraded_latency_ms": monitor.degraded_latency_ms,
                 "uptime_percentage": stats.uptime_percentage,
                 "average_latency_ms": stats.average_latency_ms,
@@ -151,6 +152,7 @@ class DashboardApp:
                         "name": monitor.name,
                         "type": monitor.type.value,
                         "state": monitor.state.value,
+                        "paused": monitor.is_paused,
                         "degraded_latency_ms": monitor.degraded_latency_ms,
                         "uptime_percentage": stats.uptime_percentage,
                         "average_latency_ms": stats.average_latency_ms,
@@ -172,6 +174,7 @@ class DashboardApp:
         payload = {
             "total": summary.total,
             "open_incidents": summary.open_incidents,
+            "paused": summary.paused,
             "states": {state.value: count for state, count in summary.counts.items()},
         }
         return self._respond_json(start_response, "200 OK", payload)

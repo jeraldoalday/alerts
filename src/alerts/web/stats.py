@@ -56,11 +56,18 @@ class StateSummary:
     Every `MonitorState` is present in `counts`, zeroes included, so callers
     can render a fixed set of tiles without deciding what to do about a state
     nothing happens to be in.
+
+    Paused monitors -- ones the config no longer declares -- are counted on
+    their own and left out of `total` and `counts`. Their last known state is
+    frozen at whatever it was when checking stopped, so folding a monitor
+    nobody watches any more into the "down" tile would report an outage that
+    isn't being observed, let alone happening.
     """
 
     total: int
     counts: Dict[MonitorState, int]
     open_incidents: int = 0
+    paused: int = 0
 
     @property
     def all_up(self) -> bool:
@@ -70,7 +77,13 @@ class StateSummary:
 def summarize_states(monitors: Iterable[Monitor], open_incidents: int = 0) -> StateSummary:
     counts = {state: 0 for state in MonitorState}
     total = 0
+    paused = 0
     for monitor in monitors:
+        if monitor.is_paused:
+            paused += 1
+            continue
         counts[monitor.state] += 1
         total += 1
-    return StateSummary(total=total, counts=counts, open_incidents=open_incidents)
+    return StateSummary(
+        total=total, counts=counts, open_incidents=open_incidents, paused=paused
+    )
