@@ -6,9 +6,9 @@ tested against plain `CheckResult` instances without a database.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterable, List, Optional
+from typing import Dict, Iterable, List, Optional
 
-from alerts.models import CheckResult
+from alerts.models import CheckResult, Monitor, MonitorState
 
 
 @dataclass(frozen=True)
@@ -47,3 +47,30 @@ def compute_uptime_stats(check_results: Iterable[CheckResult]) -> UptimeStats:
         uptime_percentage=(successful / total) * 100,
         average_latency_ms=average_latency,
     )
+
+
+@dataclass(frozen=True)
+class StateSummary:
+    """How many monitors sit in each state right now.
+
+    Every `MonitorState` is present in `counts`, zeroes included, so callers
+    can render a fixed set of tiles without deciding what to do about a state
+    nothing happens to be in.
+    """
+
+    total: int
+    counts: Dict[MonitorState, int]
+    open_incidents: int = 0
+
+    @property
+    def all_up(self) -> bool:
+        return self.total > 0 and self.counts[MonitorState.UP] == self.total
+
+
+def summarize_states(monitors: Iterable[Monitor], open_incidents: int = 0) -> StateSummary:
+    counts = {state: 0 for state in MonitorState}
+    total = 0
+    for monitor in monitors:
+        counts[monitor.state] += 1
+        total += 1
+    return StateSummary(total=total, counts=counts, open_incidents=open_incidents)

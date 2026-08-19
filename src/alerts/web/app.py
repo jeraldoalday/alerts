@@ -14,7 +14,7 @@ from urllib.parse import unquote
 
 from alerts.db import Database
 from alerts.web import queries, render
-from alerts.web.stats import compute_uptime_stats
+from alerts.web.stats import compute_uptime_stats, summarize_states
 
 StartResponse = Callable[[str, List[Tuple[str, str]]], Any]
 
@@ -56,6 +56,8 @@ class DashboardApp:
             return self._index(start_response)
         if path == "/healthz":
             return self._healthz(start_response)
+        if path == "/api/summary":
+            return self._api_summary(start_response)
         if path == "/api/monitors":
             return self._api_monitors(start_response)
         if path.startswith("/api/monitors/"):
@@ -68,15 +70,17 @@ class DashboardApp:
 
     def _index(self, start_response: StartResponse) -> Iterable[bytes]:
         with self._database.session() as session:
+            monitors = queries.list_monitors(session)
             rows = []
-            for monitor in queries.list_monitors(session):
+            for monitor in monitors:
                 checks = queries.recent_check_results(
                     session, monitor.id, self._recent_checks_limit
                 )
                 stats = compute_uptime_stats(checks)
                 last_checked_at = checks[0].checked_at if checks else None
                 rows.append((monitor, stats, last_checked_at))
-            body = render.render_index(rows)
+            summary = summarize_states(monitors, queries.count_open_incidents(session))
+            body = render.render_index(rows, summary)
         return self._respond_html(start_response, "200 OK", body)
 
     def _monitor_detail(self, start_response: StartResponse, name: str) -> Iterable[bytes]:
@@ -151,6 +155,24 @@ class DashboardApp:
                     }
                 )
         return self._respond_json(start_response, "200 OK", {"monitors": payload})
+
+    def _api_summary(self, start_response: StartResponse) -> Iterable[bytes]:
+        """Aggregate state counts, for a wallboard or an external alert check.
+
+        Separate from /api/monitors because it stays a constant-size response
+        however many monitors exist, and answers the one question a polling
+        client usually has: is anything broken right now?
+        """
+        with self._database.session() as session:
+            summary = summarize_states(
+                queries.list_monitors(session), queries.count_open_incidents(session)
+            )
+        payload = {
+            "total": summary.total,
+            "open_incidents": summary.open_incidents,
+            "states": {state.value: count for state, count in summary.counts.items()},
+        }
+        return self._respond_json(start_response, "200 OK", payload)
 
     def _healthz(self, start_response: StartResponse) -> Iterable[bytes]:
         return self._respond_json(start_response, "200 OK", {"status": "ok"})

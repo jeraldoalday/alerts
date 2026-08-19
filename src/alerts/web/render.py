@@ -12,7 +12,7 @@ from typing import List, Optional, Sequence, Tuple
 from urllib.parse import quote
 
 from alerts.models import CheckResult, Incident, IncidentState, Monitor, MonitorState
-from alerts.web.stats import UptimeStats
+from alerts.web.stats import StateSummary, UptimeStats
 
 _STATE_COLORS = {
     MonitorState.UP: "#1a7f37",
@@ -33,6 +33,11 @@ th { color: #57606a; font-weight: 600; font-size: 0.85rem; text-transform: upper
   font-size: 0.8rem; font-weight: 600; }
 .muted { color: #57606a; }
 .nav { margin-bottom: 1rem; }
+.summary { display: flex; gap: 0.75rem; flex-wrap: wrap; margin: 1rem 0 0; padding: 0;
+  list-style: none; }
+.tile { border: 1px solid #d0d7de; border-radius: 6px; padding: 0.5rem 0.9rem; min-width: 4.5rem; }
+.tile .count { display: block; font-size: 1.4rem; font-weight: 600; line-height: 1.2; }
+.tile .label { font-size: 0.75rem; text-transform: uppercase; color: #57606a; letter-spacing: 0.03em; }
 """
 
 
@@ -72,7 +77,43 @@ def _format_timestamp(value) -> str:
     return escape(value.isoformat(timespec="seconds")) if value is not None else "&mdash;"
 
 
-def render_index(rows: Sequence[Tuple[Monitor, UptimeStats, object]]) -> str:
+def _summary_tile(label: str, count: int, color: Optional[str] = None) -> str:
+    style = f' style="color:{color}"' if color and count else ""
+    return (
+        '<li class="tile">'
+        f'<span class="count"{style}>{count}</span>'
+        f'<span class="label">{escape(label)}</span>'
+        "</li>"
+    )
+
+
+def render_summary(summary: StateSummary) -> str:
+    """A row of at-a-glance tiles: one per monitor state, plus open incidents.
+
+    Rendered even when every monitor is up -- an operator opening the
+    dashboard mid-incident shouldn't have to count table rows to find out how
+    much is broken, and "0 down" is itself the reassurance they came for.
+    """
+    tiles = [_summary_tile("monitors", summary.total)]
+    tiles += [
+        _summary_tile(state.value, summary.counts[state], _STATE_COLORS[state])
+        for state in (MonitorState.UP, MonitorState.DEGRADED, MonitorState.DOWN)
+        if summary.counts[state] or state != MonitorState.DEGRADED
+    ]
+    if summary.counts[MonitorState.UNKNOWN]:
+        tiles.append(
+            _summary_tile("unknown", summary.counts[MonitorState.UNKNOWN], _STATE_COLORS[MonitorState.UNKNOWN])
+        )
+    tiles.append(
+        _summary_tile("open incidents", summary.open_incidents, _STATE_COLORS[MonitorState.DOWN])
+    )
+    return f'<ul class="summary">{"".join(tiles)}</ul>'
+
+
+def render_index(
+    rows: Sequence[Tuple[Monitor, UptimeStats, object]],
+    summary: Optional[StateSummary] = None,
+) -> str:
     body_rows: List[str] = []
     for monitor, stats, last_checked_at in rows:
         body_rows.append(
@@ -93,7 +134,8 @@ def render_index(rows: Sequence[Tuple[Monitor, UptimeStats, object]]) -> str:
         f"<tbody>{''.join(body_rows) or empty_row}</tbody>"
         "</table>"
     )
-    return _page("alerts dashboard", f"<h1>Monitors</h1>{table}")
+    summary_html = render_summary(summary) if summary is not None else ""
+    return _page("alerts dashboard", f"<h1>Monitors</h1>{summary_html}{table}")
 
 
 def _check_result_row(result: CheckResult) -> str:

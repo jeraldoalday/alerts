@@ -5,7 +5,7 @@ from typing import List, Optional, Sequence
 
 from sqlalchemy.orm import Session
 
-from alerts.models import CheckResult, Incident, Monitor
+from alerts.models import CheckResult, Incident, IncidentState, Monitor
 
 
 def list_monitors(session: Session) -> Sequence[Monitor]:
@@ -34,3 +34,8 @@ def recent_incidents(session: Session, monitor_id: int, limit: int = 20) -> List
         .limit(limit)
         .all()
     )
+
+
+def count_open_incidents(session: Session) -> int:
+    """How many incidents are currently open, across every monitor."""
+    return session.query(Incident).filter_by(state=IncidentState.OPEN).count()
