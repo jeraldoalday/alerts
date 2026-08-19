@@ -113,6 +113,7 @@ def test_api_monitors_returns_json_summary(db):
             "name": "api-site",
             "type": "http",
             "state": "down",
+            "degraded_latency_ms": None,
             "uptime_percentage": 0.0,
             "average_latency_ms": None,
         }
@@ -155,3 +156,21 @@ def test_api_monitor_detail_returns_404_json_for_unknown_monitor(db):
     assert status == "404 Not Found"
     assert headers["Content-Type"] == "application/json"
     assert json.loads(body) == {"error": "monitor 'ghost' not found"}
+
+
+def test_api_monitor_detail_includes_the_latency_budget(db):
+    with db.session() as session:
+        _monitor(session, degraded_latency_ms=1500.0)
+
+    _, _, body = _call(DashboardApp(db), "/api/monitors/site")
+
+    assert json.loads(body)["degraded_latency_ms"] == 1500.0
+
+
+def test_api_monitors_reports_a_null_budget_when_unset(db):
+    with db.session() as session:
+        _monitor(session)
+
+    _, _, body = _call(DashboardApp(db), "/api/monitors")
+
+    assert json.loads(body)["monitors"][0]["degraded_latency_ms"] is None

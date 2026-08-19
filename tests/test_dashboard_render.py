@@ -100,3 +100,17 @@ def test_render_not_found_includes_message():
     html = render.render_not_found("monitor 'ghost' not found")
 
     assert "monitor &#x27;ghost&#x27; not found" in html
+
+
+def test_detail_page_names_the_latency_budget_behind_a_degraded_badge():
+    monitor = _monitor(state=MonitorState.DEGRADED, degraded_latency_ms=1500.0)
+
+    html = render.render_monitor_detail(monitor, _NO_STATS, [], [])
+
+    assert "degraded above 1500 ms" in html
+
+
+def test_detail_page_omits_the_budget_when_the_monitor_has_none():
+    html = render.render_monitor_detail(_monitor(), _NO_STATS, [], [])
+
+    assert "degraded above" not in html

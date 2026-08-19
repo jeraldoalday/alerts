@@ -166,6 +166,21 @@ def _incident_row(incident: Incident) -> str:
     )
 
 
+def _latency_budget_note(monitor: Monitor) -> str:
+    """Explains a DEGRADED badge by naming the budget the monitor is missing.
+
+    Without it the detail page shows a monitor as degraded while every check
+    in the table below reads "ok", which looks like a bug rather than a
+    latency budget doing its job.
+    """
+    if monitor.degraded_latency_ms is None:
+        return ""
+    return (
+        f'<span class="muted">&nbsp; degraded above '
+        f"{_format_latency(monitor.degraded_latency_ms)}</span>"
+    )
+
+
 def render_monitor_detail(
     monitor: Monitor,
     stats: UptimeStats,
@@ -193,7 +208,8 @@ def render_monitor_detail(
         f'<p class="muted">{escape(monitor.type.value)} &middot; {escape(monitor.target)}</p>'
         f"<p>{_state_badge(monitor.state)} "
         f"&nbsp; uptime {_format_percentage(stats.uptime_percentage)} "
-        f"&nbsp; avg latency {_format_latency(stats.average_latency_ms)}</p>"
+        f"&nbsp; avg latency {_format_latency(stats.average_latency_ms)}"
+        f"{_latency_budget_note(monitor)}</p>"
         f"<h2>Recent checks</h2>{checks_table}"
         f"<h2>Incidents</h2>{incidents_table}"
     )

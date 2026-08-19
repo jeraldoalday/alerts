@@ -111,6 +111,7 @@ class DashboardApp:
                 "type": monitor.type.value,
                 "target": monitor.target,
                 "state": monitor.state.value,
+                "degraded_latency_ms": monitor.degraded_latency_ms,
                 "uptime_percentage": stats.uptime_percentage,
                 "average_latency_ms": stats.average_latency_ms,
                 "recent_checks": [
@@ -150,6 +151,7 @@ class DashboardApp:
                         "name": monitor.name,
                         "type": monitor.type.value,
                         "state": monitor.state.value,
+                        "degraded_latency_ms": monitor.degraded_latency_ms,
                         "uptime_percentage": stats.uptime_percentage,
                         "average_latency_ms": stats.average_latency_ms,
                     }
