@@ -33,21 +33,50 @@ def default_checkers() -> Dict[MonitorType, Checker]:
     }
 
 
+def exceeds_latency_budget(monitor: Monitor, outcome: CheckOutcome) -> bool:
+    """Whether a successful check was slow enough to count as degraded.
+
+    A monitor with no `degraded_latency_ms` has no budget to exceed, and a
+    checker that reports no latency at all (a config error surfaced before
+    any connection was attempted, say) can't be judged slow.
+    """
+    return (
+        monitor.degraded_latency_ms is not None
+        and outcome.latency_ms is not None
+        and outcome.latency_ms >= monitor.degraded_latency_ms
+    )
+
+
 def apply_check_outcome(monitor: Monitor, outcome: CheckOutcome) -> None:
     """Update a monitor's streak counters and derived state from one check outcome.
 
     Crossing `failure_threshold` consecutive failures marks it down; crossing
-    `recovery_threshold` consecutive successes marks it up. Incident records
-    are not created here -- that's the notification engine's job.
+    `recovery_threshold` consecutive successes marks it healthy again. A
+    "healthy" check is UP normally, but DEGRADED when it came back slower
+    than the monitor's `degraded_latency_ms` budget.
+
+    Sliding from UP into DEGRADED takes effect on a single slow check, since
+    degradation is a warning worth surfacing promptly and the monitor is
+    still serving. Every other move into a healthy state -- including
+    DEGRADED back to UP -- waits for `recovery_threshold` consecutive
+    successes, so a target sitting on its latency budget doesn't flap.
+
+    Incident records are not created here -- that's `sync_incident`'s job.
     """
     if outcome.success:
         monitor.consecutive_successes += 1
         monitor.consecutive_failures = 0
-        if (
-            monitor.state != MonitorState.UP
-            and monitor.consecutive_successes >= monitor.recovery_threshold
-        ):
-            monitor.state = MonitorState.UP
+        healthy_state = (
+            MonitorState.DEGRADED
+            if exceeds_latency_budget(monitor, outcome)
+            else MonitorState.UP
+        )
+        if monitor.state == healthy_state:
+            return
+        if healthy_state == MonitorState.DEGRADED and monitor.state == MonitorState.UP:
+            monitor.state = MonitorState.DEGRADED
+        elif monitor.consecutive_successes >= monitor.recovery_threshold:
+            monitor.state = healthy_state
     else:
         monitor.consecutive_failures += 1
         monitor.consecutive_successes = 0
@@ -79,6 +108,7 @@ def sync_monitors(session, monitor_configs: Iterable[MonitorConfig]) -> None:
                     expected_status=cfg.expected_status,
                     failure_threshold=cfg.failure_threshold,
                     recovery_threshold=cfg.recovery_threshold,
+                    degraded_latency_ms=cfg.degraded_latency_ms,
                     channels=list(cfg.channels),
                 )
             )
@@ -90,6 +120,7 @@ def sync_monitors(session, monitor_configs: Iterable[MonitorConfig]) -> None:
             monitor.expected_status = cfg.expected_status
             monitor.failure_threshold = cfg.failure_threshold
             monitor.recovery_threshold = cfg.recovery_threshold
+            monitor.degraded_latency_ms = cfg.degraded_latency_ms
             monitor.channels = list(cfg.channels)
 
 
