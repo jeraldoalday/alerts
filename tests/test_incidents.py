@@ -107,3 +107,34 @@ def test_repeated_down_up_cycles_create_separate_incidents(db):
         assert incidents[0].cause == "first outage"
         assert incidents[1].state == IncidentState.OPEN
         assert incidents[1].cause == "second outage"
+
+
+def test_recovering_from_down_into_degraded_resolves_the_incident(db):
+    """A slow-but-serving recovery still ends the incident.
+
+    Without this, the monitor would leave DOWN for DEGRADED with the incident
+    still open, and the eventual DEGRADED -> UP transition -- which doesn't
+    come from DOWN -- would never resolve it.
+    """
+    with db.session() as session:
+        monitor = _monitor(session, state=MonitorState.DOWN)
+        session.add(Incident(monitor_id=monitor.id, cause="boom"))
+        session.flush()
+
+        monitor.state = MonitorState.DEGRADED
+        sync_incident(session, monitor, previous_state=MonitorState.DOWN)
+        session.flush()
+
+        incident = session.query(Incident).one()
+        assert incident.state == IncidentState.RESOLVED
+        assert incident.resolved_at is not None
+
+
+def test_sliding_between_up_and_degraded_opens_no_incident(db):
+    with db.session() as session:
+        monitor = _monitor(session, state=MonitorState.DEGRADED)
+
+        sync_incident(session, monitor, previous_state=MonitorState.UP)
+        session.flush()
+
+        assert session.query(Incident).count() == 0

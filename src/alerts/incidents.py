@@ -28,17 +28,26 @@ def sync_incident(
     """Open or resolve an incident for a monitor's state transition.
 
     Call after `apply_check_outcome` has updated `monitor.state`, passing the
-    state it held beforehand. Only the DOWN/UP edges matter: entering DOWN
-    opens a new incident, returning to UP from DOWN resolves the open one.
-    Transitions through/into DEGRADED, and repeated checks that don't cross a
-    threshold, are no-ops here.
+    state it held beforehand. Only the edges into and out of DOWN matter:
+    entering DOWN opens a new incident, leaving DOWN resolves the open one.
+    Repeated checks that don't cross a threshold, and the UP <-> DEGRADED
+    slide, are no-ops here.
+
+    Leaving DOWN counts as recovery whether the monitor lands on UP or on
+    DEGRADED. A monitor whose recovery check is slow enough to be degraded is
+    serving again, and treating that as "still down" would strand the
+    incident open: the later DEGRADED -> UP transition doesn't come from
+    DOWN, so nothing would ever resolve it.
     """
     if previous_state == monitor.state:
         return
 
     if monitor.state == MonitorState.DOWN:
         session.add(Incident(monitor_id=monitor.id, cause=cause))
-    elif monitor.state == MonitorState.UP and previous_state == MonitorState.DOWN:
+    elif previous_state == MonitorState.DOWN and monitor.state in (
+        MonitorState.UP,
+        MonitorState.DEGRADED,
+    ):
         open_incident = (
             session.query(Incident)
             .filter_by(monitor_id=monitor.id, state=IncidentState.OPEN)
