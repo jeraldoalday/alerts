@@ -411,3 +411,67 @@ async def test_scheduler_stop_closes_notifiers(db):
     await run_task
 
     assert fake_notifier.closed is True
+
+
+class _ExplodingChecker:
+    """Raises what the checkers' own error handling never converts to an outcome."""
+
+    def __init__(self):
+        self.calls = 0
+
+    async def check(self, *, target, timeout_seconds, expected_status):
+        self.calls += 1
+        raise RuntimeError("checker blew up")
+
+
+class _DispatchingChecker:
+    """Routes by target, so one monitor can explode while another passes."""
+
+    def __init__(self, exploding_target: str):
+        self._exploding_target = exploding_target
+        self._exploding = _ExplodingChecker()
+        self.healthy_calls = 0
+
+    async def check(self, *, target, timeout_seconds, expected_status):
+        if target == self._exploding_target:
+            return await self._exploding.check(
+                target=target, timeout_seconds=timeout_seconds, expected_status=expected_status
+            )
+        self.healthy_calls += 1
+        return CheckOutcome(success=True, latency_ms=5.0, status_code=200)
+
+
+async def test_monitor_loop_keeps_going_after_an_unexpected_checker_exception(db, caplog):
+    """A raising checker must not end that monitor's loop."""
+    with db.session() as session:
+        session.add(_monitor(interval_seconds=1))
+
+    checker = _ExplodingChecker()
+    scheduler = Scheduler(db, checkers={MonitorType.HTTP: checker})
+
+    run_task = asyncio.create_task(scheduler.run())
+    await asyncio.sleep(1.2)
+    await scheduler.stop()
+    await run_task
+
+    assert checker.calls >= 2, "the loop checked again after the first exception"
+    assert "check failed unexpectedly" in caplog.text
+
+
+async def test_one_exploding_monitor_leaves_the_others_checking(db):
+    """run() gathers every loop, so an escaping exception would stop them all."""
+    with db.session() as session:
+        session.add(_monitor(name="broken", target="https://broken.example.com", interval_seconds=1))
+        session.add(_monitor(name="healthy", target="https://healthy.example.com", interval_seconds=1))
+
+    checker = _DispatchingChecker(exploding_target="https://broken.example.com")
+    scheduler = Scheduler(db, checkers={MonitorType.HTTP: checker})
+
+    run_task = asyncio.create_task(scheduler.run())
+    await asyncio.sleep(0.05)
+    await scheduler.stop()
+    await run_task
+
+    assert checker.healthy_calls >= 1
+    with db.session() as session:
+        assert session.query(CheckResult).count() >= 1

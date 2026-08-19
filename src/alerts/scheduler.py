@@ -7,7 +7,7 @@ a semaphore sized from `scheduler.max_concurrent_checks` in the config.
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
+import logging
 from typing import Dict, Iterable, List, Optional
 
 from alerts.checkers.base import Checker, CheckOutcome
@@ -22,6 +22,9 @@ from alerts.models import CheckResult, Incident, Monitor, MonitorState, MonitorT
 from alerts.notifications import decide_notifications
 from alerts.notifiers.base import Notifier
 from alerts.notifiers.message import format_message
+from alerts.timeutil import utcnow
+
+logger = logging.getLogger(__name__)
 
 
 def default_checkers() -> Dict[MonitorType, Checker]:
@@ -168,7 +171,18 @@ class Scheduler:
 
     async def _run_monitor_loop(self, monitor_id: int) -> None:
         while not self._stopping.is_set():
-            await self._run_one_check(monitor_id)
+            try:
+                await self._run_one_check(monitor_id)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                # One monitor's bad check must not take the process down.
+                # `run()` gathers every monitor loop, so an exception escaping
+                # here would propagate out of the gather and stop monitoring
+                # everything else too -- the worst possible failure mode for a
+                # tool whose job is noticing outages. Log it and try again on
+                # the next interval instead.
+                logger.exception("check failed unexpectedly for monitor id=%s", monitor_id)
 
             with self._database.session() as session:
                 monitor = session.get(Monitor, monitor_id)
@@ -244,7 +258,7 @@ class Scheduler:
                 incident,
                 monitor.channels,
                 self._cooldown_seconds,
-                now=datetime.now(timezone.utc),
+                now=utcnow(),
             )
             if not decisions:
                 return
