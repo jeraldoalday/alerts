@@ -4,7 +4,7 @@ import enum
 from datetime import datetime
 from typing import TYPE_CHECKING, List, Optional
 
-from sqlalchemy import JSON, Enum, Float, Integer, String
+from sqlalchemy import JSON, Boolean, Enum, Float, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from alerts.models.base import Base
@@ -53,6 +53,10 @@ class Monitor(Base):
     # rather than UP. NULL means the monitor has no latency budget at all.
     degraded_latency_ms: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     channels: Mapped[List[str]] = mapped_column(JSON, default=list)
+    # False once a monitor disappears from the config. The row (and its
+    # history) is kept, but the scheduler stops checking it -- see
+    # `sync_monitors`.
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default="1")
 
     state: Mapped[MonitorState] = mapped_column(
         Enum(MonitorState), default=MonitorState.UNKNOWN
