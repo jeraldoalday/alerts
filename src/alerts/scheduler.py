@@ -8,16 +8,17 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Dict, Iterable, List, Optional
+from typing import Dict, Iterable, List, Optional, Sequence
 
 from alerts.checkers.base import Checker, CheckOutcome, CheckRequest
 from alerts.checkers.dns import DnsChecker
 from alerts.checkers.http import HttpChecker
 from alerts.checkers.ssl import SslChecker
 from alerts.checkers.tcp import TcpChecker
-from alerts.config import MonitorConfig
+from alerts.config import MaintenanceWindowConfig, MonitorConfig
 from alerts.db import Database
 from alerts.incidents import sync_incident
+from alerts.maintenance import active_windows
 from alerts.models import (
     CheckResult,
     Incident,
@@ -194,11 +195,13 @@ class Scheduler:
         max_concurrent_checks: int = 20,
         notifiers: Optional[Dict[str, Notifier]] = None,
         cooldown_seconds: int = 900,
+        maintenance_windows: Optional[Sequence[MaintenanceWindowConfig]] = None,
     ):
         self._database = database
         self._checkers = checkers or default_checkers()
         self._notifiers = notifiers or {}
         self._cooldown_seconds = cooldown_seconds
+        self._maintenance_windows = list(maintenance_windows or [])
         self._semaphore = asyncio.Semaphore(max_concurrent_checks)
         self._stopping = asyncio.Event()
         self._tasks: List[asyncio.Task] = []
@@ -291,6 +294,13 @@ class Scheduler:
         outside the DB session -- they're network I/O -- so the incident's
         data needed for `decide_notifications` and message rendering is
         pulled out first.
+
+        A monitor inside a maintenance window returns before any of that.
+        Suppression happens here rather than in the check loop on purpose:
+        checks still run, results and incidents are still recorded, so the
+        history of what the change did to the service survives the window.
+        Nothing is logged as sent, so an incident that outlives the window
+        is announced as soon as it ends rather than being lost.
         """
         if not self._notifiers:
             return
@@ -298,6 +308,14 @@ class Scheduler:
         with self._database.session() as session:
             monitor = session.get(Monitor, monitor_id)
             if monitor is None:
+                return
+            windows = active_windows(self._maintenance_windows, monitor.name)
+            if windows:
+                logger.debug(
+                    "suppressing notifications for %s: in maintenance window(s) %s",
+                    monitor.name,
+                    ", ".join(window.name for window in windows),
+                )
                 return
             incident = (
                 session.query(Incident)

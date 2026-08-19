@@ -71,6 +71,7 @@ async def _run(config_path: str) -> None:
         max_concurrent_checks=config.scheduler.max_concurrent_checks,
         notifiers=notifiers,
         cooldown_seconds=config.notifications.cooldown_seconds,
+        maintenance_windows=config.maintenance,
     )
     await scheduler.run()
 
