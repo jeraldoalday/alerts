@@ -159,6 +159,7 @@ def sync_monitors(session, monitor_configs: Iterable[MonitorConfig]) -> None:
                     failure_threshold=cfg.failure_threshold,
                     recovery_threshold=cfg.recovery_threshold,
                     degraded_latency_ms=cfg.degraded_latency_ms,
+                    expected_body_contains=cfg.expected_body_contains,
                     channels=list(cfg.channels),
                     enabled=True,
                 )
@@ -172,6 +173,7 @@ def sync_monitors(session, monitor_configs: Iterable[MonitorConfig]) -> None:
             monitor.failure_threshold = cfg.failure_threshold
             monitor.recovery_threshold = cfg.recovery_threshold
             monitor.degraded_latency_ms = cfg.degraded_latency_ms
+            monitor.expected_body_contains = cfg.expected_body_contains
             monitor.channels = list(cfg.channels)
             monitor.enabled = True
 

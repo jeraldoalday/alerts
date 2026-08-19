@@ -59,7 +59,26 @@ class MonitorConfig(BaseModel):
     failure_threshold: int = Field(default=3, ge=1)
     recovery_threshold: int = Field(default=2, ge=1)
     degraded_latency_ms: Optional[float] = Field(default=None, gt=0)
+    # HTTP only: a substring the response body must contain for the check to
+    # pass, on top of the status code matching.
+    expected_body_contains: Optional[str] = Field(default=None, min_length=1)
     channels: List[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def body_assertion_applies_to_the_monitor_type(self) -> "MonitorConfig":
+        """Reject a body assertion on a check that never reads a body.
+
+        Only the HTTP checker fetches a response body; a TCP connect, a DNS
+        lookup, and a certificate fetch have nothing to match against. Silently
+        ignoring the field would leave an operator believing a health endpoint
+        is being content-checked when only its port is.
+        """
+        if self.expected_body_contains is not None and self.type != "http":
+            raise ValueError(
+                f"monitor {self.name!r} sets expected_body_contains but is a "
+                f"{self.type!r} monitor, which never reads a response body"
+            )
+        return self
 
     @model_validator(mode="after")
     def latency_budget_is_reachable(self) -> "MonitorConfig":

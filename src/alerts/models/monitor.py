@@ -4,7 +4,7 @@ import enum
 from datetime import datetime
 from typing import TYPE_CHECKING, List, Optional
 
-from sqlalchemy import JSON, Boolean, Enum, Float, Integer, String
+from sqlalchemy import JSON, Boolean, Enum, Float, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from alerts.models.base import Base
@@ -52,6 +52,9 @@ class Monitor(Base):
     # Successful checks at or above this latency mark the monitor DEGRADED
     # rather than UP. NULL means the monitor has no latency budget at all.
     degraded_latency_ms: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    # HTTP only: substring the response body must contain. NULL means the
+    # status code is the only assertion.
+    expected_body_contains: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     channels: Mapped[List[str]] = mapped_column(JSON, default=list)
     # False once a monitor disappears from the config. The row (and its
     # history) is kept, but the scheduler stops checking it -- see

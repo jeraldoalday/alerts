@@ -22,6 +22,7 @@ class CheckRequest:
     target: str
     timeout_seconds: float
     expected_status: int = 200
+    expected_body_contains: Optional[str] = None
 
     @classmethod
     def from_monitor(cls, monitor: "Monitor") -> "CheckRequest":
@@ -34,6 +35,7 @@ class CheckRequest:
             target=monitor.target,
             timeout_seconds=monitor.timeout_seconds,
             expected_status=monitor.expected_status,
+            expected_body_contains=monitor.expected_body_contains,
         )
 
 

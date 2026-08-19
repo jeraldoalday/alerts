@@ -43,6 +43,10 @@ monitors:
     # degraded instead of up. Must stay below timeout_seconds -- anything
     # slower than the timeout is recorded as a failure, not a slow success.
     degraded_latency_ms: 1500
+    # HTTP monitors only: the check fails unless the response body contains
+    # this substring, even when the status code matches. Useful for health
+    # endpoints that answer 200 with a body describing what's broken.
+    expected_body_contains: "ok"
     channels: [ops-slack, ops-email]
 
   - name: api-gateway
