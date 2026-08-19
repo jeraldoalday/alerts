@@ -124,6 +124,54 @@ def active_windows(
     return found
 
 
+def next_occurrence(
+    window: MaintenanceWindowConfig, *, now: Optional[datetime] = None
+) -> Optional[WindowOccurrence]:
+    """The next occurrence of `window` that starts after `now`.
+
+    None once a fixed window has started or passed, and None for a recurring
+    window whose `days` filter is somehow unsatisfiable. Recurring windows
+    are searched a week and a day ahead, which is enough for any weekday
+    filter to come round: the extra day covers a window whose start time has
+    already passed today.
+
+    An occurrence currently running is not "next" -- callers report that
+    separately, since "active now" and "starts in 3 hours" answer different
+    questions.
+    """
+    moment = as_utc_naive(now or utcnow())
+    if not window.is_recurring:
+        occurrence = _fixed_occurrence(window)
+        return occurrence if occurrence.starts_at > moment else None
+
+    assert window.start is not None and window.duration_minutes is not None
+    duration = timedelta(minutes=window.duration_minutes)
+    for day_offset in range(0, 8):
+        start_date = (moment + timedelta(days=day_offset)).date()
+        starts_at = datetime.combine(start_date, window.start)
+        if starts_at <= moment:
+            continue
+        if window.days and _weekday_name(starts_at) not in window.days:
+            continue
+        return WindowOccurrence(
+            name=window.name, starts_at=starts_at, ends_at=starts_at + duration
+        )
+    return None
+
+
+def describe_schedule(window: MaintenanceWindowConfig) -> str:
+    """A one-line, human-readable rendering of when a window applies."""
+    if not window.is_recurring:
+        assert window.starts_at is not None and window.ends_at is not None
+        return (
+            f"{as_utc_naive(window.starts_at).isoformat(timespec='minutes')} to "
+            f"{as_utc_naive(window.ends_at).isoformat(timespec='minutes')} UTC"
+        )
+    assert window.start is not None and window.duration_minutes is not None
+    days = ",".join(window.days) if window.days else "daily"
+    return f"{days} at {window.start.strftime('%H:%M')} UTC for {window.duration_minutes}m"
+
+
 def is_in_maintenance(
     windows: Sequence[MaintenanceWindowConfig],
     monitor_name: str,
