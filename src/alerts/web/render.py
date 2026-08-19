@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from html import escape
 from typing import List, Optional, Sequence, Tuple
+from urllib.parse import quote
 
 from alerts.models import CheckResult, Incident, IncidentState, Monitor, MonitorState
 from alerts.web.stats import UptimeStats
@@ -43,6 +44,17 @@ def _page(title: str, body: str) -> str:
     )
 
 
+def _url_path(monitor_name: str) -> str:
+    """Percent-encode a monitor name for use in a URL path.
+
+    Names may hold anything but spaces and slashes, so an unencoded one can
+    carry a "#" or "?" that truncates the path into a fragment or a query, or
+    non-ASCII characters the browser percent-encodes itself into something
+    the route then fails to match.
+    """
+    return escape(quote(monitor_name, safe=""))
+
+
 def _state_badge(state: MonitorState) -> str:
     color = _STATE_COLORS.get(state, _STATE_COLORS[MonitorState.UNKNOWN])
     return f'<span class="badge" style="background:{color}">{escape(state.value)}</span>'
@@ -65,7 +77,7 @@ def render_index(rows: Sequence[Tuple[Monitor, UptimeStats, object]]) -> str:
     for monitor, stats, last_checked_at in rows:
         body_rows.append(
             "<tr>"
-            f'<td><a href="/monitors/{escape(monitor.name)}">{escape(monitor.name)}</a></td>'
+            f'<td><a href="/monitors/{_url_path(monitor.name)}">{escape(monitor.name)}</a></td>'
             f"<td>{escape(monitor.type.value)}</td>"
             f"<td>{_state_badge(monitor.state)}</td>"
             f"<td>{_format_percentage(stats.uptime_percentage)}</td>"

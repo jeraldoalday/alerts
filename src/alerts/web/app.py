@@ -10,12 +10,35 @@ from __future__ import annotations
 
 import json
 from typing import Any, Callable, Dict, Iterable, List, Tuple
+from urllib.parse import unquote
 
 from alerts.db import Database
 from alerts.web import queries, render
 from alerts.web.stats import compute_uptime_stats
 
 StartResponse = Callable[[str, List[Tuple[str, str]]], Any]
+
+
+def _decoded_path(environ: dict) -> str:
+    """The request path as text, undoing WSGI's latin-1 transport encoding.
+
+    PEP 3333 defines PATH_INFO as bytes smuggled through a `str` one
+    character per byte (latin-1), and `wsgiref` decodes percent-escapes that
+    way too. A monitor whose name isn't pure ASCII therefore arrives as
+    mojibake and no lookup by name would ever match it; re-encoding to bytes
+    and decoding as UTF-8 recovers the name the config declared.
+
+    A path that doesn't fit that convention -- one an already-decoding server
+    handed over, or plain garbage -- falls back to replacing whatever can't be
+    encoded. That matters beyond tidiness: an undecodable byte arrives as a
+    lone surrogate, and passing one through to a name lookup raises inside the
+    database driver, turning a malformed URL into a 500 instead of a 404.
+    """
+    path = environ.get("PATH_INFO") or "/"
+    try:
+        return path.encode("latin-1").decode("utf-8")
+    except (UnicodeEncodeError, UnicodeDecodeError):
+        return path.encode("utf-8", errors="replace").decode("utf-8")
 
 
 class DashboardApp:
@@ -27,7 +50,7 @@ class DashboardApp:
         if environ.get("REQUEST_METHOD", "GET") != "GET":
             return self._respond(start_response, "405 Method Not Allowed", b"method not allowed")
 
-        path = environ.get("PATH_INFO") or "/"
+        path = _decoded_path(environ)
 
         if path == "/":
             return self._index(start_response)
@@ -36,9 +59,11 @@ class DashboardApp:
         if path == "/api/monitors":
             return self._api_monitors(start_response)
         if path.startswith("/api/monitors/"):
-            return self._api_monitor_detail(start_response, path[len("/api/monitors/") :])
+            return self._api_monitor_detail(
+                start_response, unquote(path[len("/api/monitors/") :])
+            )
         if path.startswith("/monitors/"):
-            return self._monitor_detail(start_response, path[len("/monitors/") :])
+            return self._monitor_detail(start_response, unquote(path[len("/monitors/") :]))
         return self._not_found(start_response)
 
     def _index(self, start_response: StartResponse) -> Iterable[bytes]:
