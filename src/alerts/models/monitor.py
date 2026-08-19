@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import enum
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, List
+from typing import TYPE_CHECKING, List, Optional
 
-from sqlalchemy import JSON, Enum, Integer, String
+from sqlalchemy import JSON, Enum, Float, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from alerts.models.base import Base
@@ -52,6 +52,9 @@ class Monitor(Base):
     expected_status: Mapped[int] = mapped_column(Integer, default=200)
     failure_threshold: Mapped[int] = mapped_column(Integer, default=3)
     recovery_threshold: Mapped[int] = mapped_column(Integer, default=2)
+    # Successful checks at or above this latency mark the monitor DEGRADED
+    # rather than UP. NULL means the monitor has no latency budget at all.
+    degraded_latency_ms: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     channels: Mapped[List[str]] = mapped_column(JSON, default=list)
 
     state: Mapped[MonitorState] = mapped_column(
