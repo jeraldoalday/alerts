@@ -35,6 +35,12 @@ jobs:
           rm -f ci_test.db
           ALERTS_DATABASE_URL="sqlite:///ci_test.db" alembic upgrade head
 
+      - name: Verify the migrations match the models
+        # create_all() builds the schema from the models and is what the
+        # tests run against, so a column added without a migration passes
+        # everything and is simply missing on a real upgrade.
+        run: python scripts/check_migration_parity.py "sqlite:///ci_test.db"
+
       - name: Verify migrations roll back cleanly
         # Down then back up again: a downgrade that only ever runs during an
         # incident is a downgrade nobody has tested. SQLite in particular
