@@ -1,4 +1,4 @@
-"""Command-line entrypoint: `alerts run|serve|status|prune [--config PATH]`."""
+"""Command-line entrypoint: `alerts run|serve|status|maintenance|prune [--config PATH]`."""
 from __future__ import annotations
 
 import argparse
@@ -10,7 +10,14 @@ from typing import List, Optional
 from alerts.config import load_config
 from alerts.db import Database
 from alerts.notifiers.registry import build_notifiers
-from alerts.reporting import collect_status_rows, format_status_summary, format_status_table
+from alerts.reporting import (
+    collect_maintenance_rows,
+    collect_status_rows,
+    format_maintenance_summary,
+    format_maintenance_table,
+    format_status_summary,
+    format_status_table,
+)
 from alerts.retention import prune
 from alerts.scheduler import Scheduler, sync_monitors
 from alerts.web.server import serve
@@ -42,6 +49,22 @@ def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         "--exit-code",
         action="store_true",
         help="Exit 1 if any monitor is down, for use as a scripted check.",
+    )
+
+    maintenance_parser = subparsers.add_parser(
+        "maintenance", help="List maintenance windows and which are active now."
+    )
+    maintenance_parser.add_argument(
+        "--config", default="config.yaml", help="Path to config.yaml"
+    )
+    maintenance_parser.add_argument(
+        "--monitor",
+        help="Only windows covering this monitor, including estate-wide ones.",
+    )
+    maintenance_parser.add_argument(
+        "--exit-code",
+        action="store_true",
+        help="Exit 1 if no window is currently active, for gating a deploy script.",
     )
 
     prune_parser = subparsers.add_parser(
@@ -105,6 +128,26 @@ def _status(config_path: str, checks_window: int, use_exit_code: bool) -> int:
     return 1 if use_exit_code and any(row.is_down for row in rows) else 0
 
 
+def _maintenance(config_path: str, monitor: Optional[str], use_exit_code: bool) -> int:
+    """Print the maintenance window table, returning the process exit code.
+
+    Reads only the config -- no database is opened, since a window is a
+    declaration rather than something the scheduler records. The `--exit-code`
+    form is meant for gating: `alerts maintenance --monitor api --exit-code`
+    in front of a deploy script fails unless that service is actually covered
+    right now, which catches the window that was configured for the wrong
+    weekday before the pages start rather than after.
+    """
+    config = load_config(config_path)
+    rows = collect_maintenance_rows(config.maintenance, monitor=monitor)
+
+    print(format_maintenance_table(rows))
+    print()
+    print(format_maintenance_summary(rows))
+
+    return 1 if use_exit_code and not any(row.is_active for row in rows) else 0
+
+
 def _prune(config_path: str, dry_run: bool) -> None:
     """Apply the configured retention policy once and log what it removed.
 
@@ -141,6 +184,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         _serve(args.config)
     elif args.command == "status":
         return _status(args.config, checks_window=args.checks, use_exit_code=args.exit_code)
+    elif args.command == "maintenance":
+        return _maintenance(args.config, monitor=args.monitor, use_exit_code=args.exit_code)
     elif args.command == "prune":
         _prune(args.config, dry_run=args.dry_run)
     return 0
