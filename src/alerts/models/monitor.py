@@ -59,6 +59,14 @@ class Monitor(Base):
     )
     consecutive_failures: Mapped[int] = mapped_column(Integer, default=0)
     consecutive_successes: Mapped[int] = mapped_column(Integer, default=0)
+    # Successful checks in a row that came back *within* the latency budget.
+    # Separate from consecutive_successes because leaving DEGRADED is a
+    # question about latency, not about the check passing at all: a monitor
+    # that has been slow for hours has a long success streak and would
+    # otherwise jump back to UP on the first fast check it ever gets.
+    consecutive_fast_checks: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0"
+    )
 
     created_at: Mapped[datetime] = mapped_column(default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(default=utcnow, onupdate=utcnow)
