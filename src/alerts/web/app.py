@@ -13,7 +13,7 @@ from typing import Any, Callable, Dict, Iterable, List, Tuple
 from urllib.parse import unquote
 
 from alerts.db import Database
-from alerts.web import queries, render
+from alerts.web import metrics, queries, render
 from alerts.web.stats import compute_uptime_stats, summarize_states
 
 StartResponse = Callable[[str, List[Tuple[str, str]]], Any]
@@ -56,6 +56,8 @@ class DashboardApp:
             return self._index(start_response)
         if path == "/healthz":
             return self._healthz(start_response)
+        if path == "/metrics":
+            return self._metrics(start_response)
         if path == "/api/summary":
             return self._api_summary(start_response)
         if path == "/api/monitors":
@@ -178,6 +180,25 @@ class DashboardApp:
             "states": {state.value: count for state, count in summary.counts.items()},
         }
         return self._respond_json(start_response, "200 OK", payload)
+
+    def _metrics(self, start_response: StartResponse) -> Iterable[bytes]:
+        """Prometheus exposition of every monitor's current reading.
+
+        Built from the same queries and aggregation the index page uses, so
+        a scraped series and the dashboard can never disagree about what a
+        monitor's uptime is.
+        """
+        with self._database.session() as session:
+            rows = []
+            for monitor in queries.list_monitors(session):
+                checks = queries.recent_check_results(
+                    session, monitor.id, self._recent_checks_limit
+                )
+                rows.append((monitor, compute_uptime_stats(checks)))
+            body = metrics.render_metrics(rows, queries.count_open_incidents(session))
+        return self._respond(
+            start_response, "200 OK", body.encode("utf-8"), content_type=metrics.CONTENT_TYPE
+        )
 
     def _healthz(self, start_response: StartResponse) -> Iterable[bytes]:
         return self._respond_json(start_response, "200 OK", {"status": "ok"})
