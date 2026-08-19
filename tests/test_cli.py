@@ -1,4 +1,8 @@
+from datetime import datetime, timedelta, timezone
+
 from alerts import cli
+from alerts.db import Database
+from alerts.models import CheckResult, Monitor, MonitorType
 from alerts.notifiers.slack import SlackNotifier
 
 
@@ -115,3 +119,67 @@ channels:
 
     assert isinstance(captured["notifiers"]["ops-slack"], SlackNotifier)
     assert captured["cooldown_seconds"] == 900
+
+
+def test_parse_args_prune_defaults():
+    args = cli._parse_args(["prune"])
+
+    assert args.command == "prune"
+    assert args.config == "config.yaml"
+    assert args.dry_run is False
+
+
+def test_parse_args_prune_accepts_dry_run():
+    args = cli._parse_args(["prune", "--config", "other.yaml", "--dry-run"])
+
+    assert args.config == "other.yaml"
+    assert args.dry_run is True
+
+
+def _seed_old_check(database_url: str) -> None:
+    database = Database(database_url)
+    database.create_all()
+    with database.session() as session:
+        monitor = Monitor(name="site", type=MonitorType.HTTP, target="https://example.com")
+        session.add(monitor)
+        session.flush()
+        session.add(
+            CheckResult(
+                monitor_id=monitor.id,
+                success=True,
+                checked_at=datetime.now(timezone.utc).replace(tzinfo=None)
+                - timedelta(days=365),
+            )
+        )
+
+
+def test_main_prune_deletes_aged_out_history(tmp_path):
+    config_file = tmp_path / "config.yaml"
+    db_path = tmp_path / "test.db"
+    database_url = f"sqlite:///{db_path}"
+    config_file.write_text(
+        f"database:\n  url: {database_url}\n"
+        "retention:\n  check_results_days: 30\n  min_check_results_per_monitor: 0\n"
+    )
+    _seed_old_check(database_url)
+
+    cli.main(["prune", "--config", str(config_file)])
+
+    with Database(database_url).session() as session:
+        assert session.query(CheckResult).count() == 0
+
+
+def test_main_prune_dry_run_leaves_history_alone(tmp_path):
+    config_file = tmp_path / "config.yaml"
+    db_path = tmp_path / "test.db"
+    database_url = f"sqlite:///{db_path}"
+    config_file.write_text(
+        f"database:\n  url: {database_url}\n"
+        "retention:\n  check_results_days: 30\n  min_check_results_per_monitor: 0\n"
+    )
+    _seed_old_check(database_url)
+
+    cli.main(["prune", "--config", str(config_file), "--dry-run"])
+
+    with Database(database_url).session() as session:
+        assert session.query(CheckResult).count() == 1
