@@ -16,12 +16,15 @@ from typing import List, Optional, Sequence
 
 from sqlalchemy.orm import Session
 
+from alerts.config import MaintenanceWindowConfig
+from alerts.maintenance import active_occurrence, describe_schedule, next_occurrence
 from alerts.models import Incident, IncidentState, MonitorState
 from alerts.timeutil import as_utc_naive, utcnow
 from alerts.web import queries
 from alerts.web.stats import compute_uptime_stats
 
 _COLUMNS = ("MONITOR", "TYPE", "STATE", "UPTIME", "LATENCY", "LAST CHECK", "NOTE")
+_MAINTENANCE_COLUMNS = ("WINDOW", "SCHEDULE", "MONITORS", "STATUS")
 
 
 @dataclass(frozen=True)
@@ -142,6 +145,101 @@ def format_status_table(rows: Sequence[StatusRow], *, now: Optional[datetime] = 
         "  ".join(cell.ljust(width) for cell, width in zip(line, widths)).rstrip()
         for line in table
     )
+
+
+@dataclass(frozen=True)
+class MaintenanceRow:
+    """One maintenance window's line in the `alerts maintenance` table."""
+
+    name: str
+    schedule: str
+    monitors: List[str]
+    active_until: Optional[datetime]
+    next_start: Optional[datetime]
+
+    @property
+    def is_active(self) -> bool:
+        return self.active_until is not None
+
+
+def collect_maintenance_rows(
+    windows: Sequence[MaintenanceWindowConfig],
+    *,
+    monitor: Optional[str] = None,
+    now: Optional[datetime] = None,
+) -> List[MaintenanceRow]:
+    """Build one row per configured window.
+
+    `monitor` narrows the report to the windows covering that monitor, which
+    is the question actually being asked before starting a change: is this
+    service covered right now?
+
+    A window is asked whether it is active for a specific monitor, so an
+    unfiltered report resolves "active" against the first monitor the window
+    names -- a window scoped to a monitor is active for all of them or none,
+    since the schedule doesn't vary per monitor.
+    """
+    moment = as_utc_naive(now or utcnow())
+    rows: List[MaintenanceRow] = []
+    for window in windows:
+        if monitor is not None and not window.applies_to(monitor):
+            continue
+        subject = monitor or (window.monitors[0] if window.monitors else "*")
+        active = active_occurrence(window, subject, moment)
+        upcoming = next_occurrence(window, now=moment)
+        rows.append(
+            MaintenanceRow(
+                name=window.name,
+                schedule=describe_schedule(window),
+                monitors=list(window.monitors),
+                active_until=active.ends_at if active else None,
+                next_start=upcoming.starts_at if upcoming else None,
+            )
+        )
+    return rows
+
+
+def _maintenance_status(row: MaintenanceRow, now: datetime) -> str:
+    if row.active_until is not None:
+        remaining = format_duration((row.active_until - as_utc_naive(now)).total_seconds())
+        return f"ACTIVE, {remaining} left"
+    if row.next_start is not None:
+        until = format_duration((row.next_start - as_utc_naive(now)).total_seconds())
+        return f"in {until}"
+    return "past"
+
+
+def _maintenance_cells(row: MaintenanceRow, now: datetime) -> List[str]:
+    return [
+        row.name,
+        row.schedule,
+        ",".join(row.monitors) if row.monitors else "all",
+        _maintenance_status(row, now),
+    ]
+
+
+def format_maintenance_table(
+    rows: Sequence[MaintenanceRow], *, now: Optional[datetime] = None
+) -> str:
+    """Render maintenance windows as an aligned plain-text table."""
+    now = now or utcnow()
+    if not rows:
+        return "No maintenance windows configured."
+
+    table = [list(_MAINTENANCE_COLUMNS)] + [_maintenance_cells(row, now) for row in rows]
+    widths = [
+        max(len(line[column]) for line in table) for column in range(len(_MAINTENANCE_COLUMNS))
+    ]
+    return "\n".join(
+        "  ".join(cell.ljust(width) for cell, width in zip(line, widths)).rstrip()
+        for line in table
+    )
+
+
+def format_maintenance_summary(rows: Sequence[MaintenanceRow]) -> str:
+    """One-line tally of how many windows are configured and active."""
+    active = sum(1 for row in rows if row.is_active)
+    return f"{len(rows)} window(s), {active} active"
 
 
 def format_status_summary(rows: Sequence[StatusRow]) -> str:
