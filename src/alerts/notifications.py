@@ -23,18 +23,7 @@ from datetime import datetime, timedelta
 from typing import Iterable, List
 
 from alerts.models import Incident, IncidentState, NotificationKind
-
-
-def _as_utc_naive(value: datetime) -> datetime:
-    """Strip tzinfo so aware and DB-round-tripped-naive datetimes compare.
-
-    `sent_at` is always written UTC-aware, but SQLite's `DateTime` column
-    drops tzinfo on read back, so a value loaded from the DB ends up naive
-    while a freshly computed `now` stays aware. Both represent UTC, so
-    dropping tzinfo on whichever side has it makes the subtraction below
-    well-defined either way.
-    """
-    return value.replace(tzinfo=None) if value.tzinfo is not None else value
+from alerts.timeutil import as_utc_naive
 
 
 @dataclass(frozen=True)
@@ -69,7 +58,7 @@ def decide_notifications(
             continue
 
         last_sent_at = max(n.sent_at for n in sent)
-        if _as_utc_naive(now) - _as_utc_naive(last_sent_at) >= timedelta(seconds=cooldown_seconds):
+        if as_utc_naive(now) - as_utc_naive(last_sent_at) >= timedelta(seconds=cooldown_seconds):
             decisions.append(NotificationDecision(channel_name, NotificationKind.ESCALATION))
 
     return decisions

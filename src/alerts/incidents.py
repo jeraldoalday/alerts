@@ -7,16 +7,12 @@ duration, and notification dedup have something to key off.
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
 from typing import Optional
 
 from sqlalchemy.orm import Session
 
 from alerts.models import Incident, IncidentState, Monitor, MonitorState
-
-
-def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+from alerts.timeutil import utcnow
 
 
 def sync_incident(
@@ -56,4 +52,4 @@ def sync_incident(
         )
         if open_incident is not None:
             open_incident.state = IncidentState.RESOLVED
-            open_incident.resolved_at = _utcnow()
+            open_incident.resolved_at = utcnow()

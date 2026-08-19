@@ -1,20 +1,17 @@
 from __future__ import annotations
 
 import enum
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import TYPE_CHECKING, List, Optional
 
 from sqlalchemy import Enum, ForeignKey, Index, Integer, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from alerts.models.base import Base
+from alerts.timeutil import utcnow
 
 if TYPE_CHECKING:
     from alerts.models.monitor import Monitor
-
-
-def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
 
 
 class IncidentState(str, enum.Enum):
@@ -43,7 +40,7 @@ class Incident(Base):
     state: Mapped[IncidentState] = mapped_column(Enum(IncidentState), default=IncidentState.OPEN)
     cause: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
-    started_at: Mapped[datetime] = mapped_column(default=_utcnow)
+    started_at: Mapped[datetime] = mapped_column(default=utcnow)
     resolved_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
 
     monitor: Mapped["Monitor"] = relationship(back_populates="incidents")
@@ -80,7 +77,7 @@ class NotificationLog(Base):
     kind: Mapped[NotificationKind] = mapped_column(
         Enum(NotificationKind), default=NotificationKind.OPENED
     )
-    sent_at: Mapped[datetime] = mapped_column(default=_utcnow)
+    sent_at: Mapped[datetime] = mapped_column(default=utcnow)
     success: Mapped[bool] = mapped_column(default=False)
     error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 

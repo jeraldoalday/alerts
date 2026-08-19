@@ -1,19 +1,16 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import TYPE_CHECKING, Optional
 
 from sqlalchemy import Boolean, Float, ForeignKey, Integer, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from alerts.models.base import Base
+from alerts.timeutil import utcnow
 
 if TYPE_CHECKING:
     from alerts.models.monitor import Monitor
-
-
-def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
 
 
 class CheckResult(Base):
@@ -29,7 +26,7 @@ class CheckResult(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     monitor_id: Mapped[int] = mapped_column(ForeignKey("monitors.id"), index=True)
 
-    checked_at: Mapped[datetime] = mapped_column(default=_utcnow, index=True)
+    checked_at: Mapped[datetime] = mapped_column(default=utcnow, index=True)
     success: Mapped[bool] = mapped_column(Boolean)
     latency_ms: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     status_code: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)

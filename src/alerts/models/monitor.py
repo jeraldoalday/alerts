@@ -1,21 +1,18 @@
 from __future__ import annotations
 
 import enum
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import TYPE_CHECKING, List, Optional
 
 from sqlalchemy import JSON, Enum, Float, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from alerts.models.base import Base
+from alerts.timeutil import utcnow
 
 if TYPE_CHECKING:
     from alerts.models.check_result import CheckResult
     from alerts.models.incident import Incident
-
-
-def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
 
 
 class MonitorState(str, enum.Enum):
@@ -63,8 +60,8 @@ class Monitor(Base):
     consecutive_failures: Mapped[int] = mapped_column(Integer, default=0)
     consecutive_successes: Mapped[int] = mapped_column(Integer, default=0)
 
-    created_at: Mapped[datetime] = mapped_column(default=_utcnow)
-    updated_at: Mapped[datetime] = mapped_column(default=_utcnow, onupdate=_utcnow)
+    created_at: Mapped[datetime] = mapped_column(default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(default=utcnow, onupdate=utcnow)
 
     check_results: Mapped[List["CheckResult"]] = relationship(
         back_populates="monitor", cascade="all, delete-orphan"
