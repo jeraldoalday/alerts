@@ -34,3 +34,12 @@ jobs:
         run: |
           rm -f ci_test.db
           ALERTS_DATABASE_URL="sqlite:///ci_test.db" alembic upgrade head
+
+      - name: Verify migrations roll back cleanly
+        # Down then back up again: a downgrade that only ever runs during an
+        # incident is a downgrade nobody has tested. SQLite in particular
+        # rebuilds the whole table for a dropped column, so a broken batch
+        # block fails here rather than at 3am.
+        run: |
+          ALERTS_DATABASE_URL="sqlite:///ci_test.db" alembic downgrade base
+          ALERTS_DATABASE_URL="sqlite:///ci_test.db" alembic upgrade head
