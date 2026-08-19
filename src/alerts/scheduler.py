@@ -18,7 +18,15 @@ from alerts.checkers.tcp import TcpChecker
 from alerts.config import MonitorConfig
 from alerts.db import Database
 from alerts.incidents import sync_incident
-from alerts.models import CheckResult, Incident, Monitor, MonitorState, MonitorType, NotificationLog
+from alerts.models import (
+    CheckResult,
+    Incident,
+    IncidentState,
+    Monitor,
+    MonitorState,
+    MonitorType,
+    NotificationLog,
+)
 from alerts.notifications import decide_notifications
 from alerts.notifiers.base import Notifier
 from alerts.notifiers.message import format_message
@@ -100,15 +108,44 @@ def apply_check_outcome(monitor: Monitor, outcome: CheckOutcome) -> None:
             monitor.state = MonitorState.DOWN
 
 
+def _disable_monitor(session, monitor: Monitor) -> None:
+    """Stop checking a monitor that the config no longer declares.
+
+    Its rows stay: the check and incident history is the reason the row isn't
+    just deleted. Any incident still open is resolved on the way out, because
+    nothing will ever check the monitor again to resolve it -- it would sit on
+    the dashboard's open-incident count forever, and `alerts status` would
+    report an outage that stopped being monitored rather than one still
+    happening.
+    """
+    monitor.enabled = False
+    open_incidents = (
+        session.query(Incident)
+        .filter_by(monitor_id=monitor.id, state=IncidentState.OPEN)
+        .all()
+    )
+    for incident in open_incidents:
+        incident.state = IncidentState.RESOLVED
+        incident.resolved_at = utcnow()
+
+
 def sync_monitors(session, monitor_configs: Iterable[MonitorConfig]) -> None:
     """Insert/update Monitor rows so they match the configured set.
 
-    Existing rows are updated in place (preserving state/streak history);
-    monitors no longer present in the config are left alone rather than
-    deleted, since deleting would cascade-delete their check/incident history.
+    Existing rows are updated in place (preserving state/streak history).
+    Monitors no longer present in the config are disabled rather than
+    deleted, since deleting would cascade-delete their check/incident
+    history -- but they are disabled rather than left alone, because a row
+    the config no longer mentions was still being picked up by the scheduler
+    and checked (and alerted on) indefinitely.
+
+    A monitor that comes back into the config is re-enabled, so removing an
+    entry and putting it back is reversible and keeps the old history.
     """
     existing = {m.name: m for m in session.query(Monitor).all()}
+    configured = set()
     for cfg in monitor_configs:
+        configured.add(cfg.name)
         monitor = existing.get(cfg.name)
         if monitor is None:
             session.add(
@@ -123,6 +160,7 @@ def sync_monitors(session, monitor_configs: Iterable[MonitorConfig]) -> None:
                     recovery_threshold=cfg.recovery_threshold,
                     degraded_latency_ms=cfg.degraded_latency_ms,
                     channels=list(cfg.channels),
+                    enabled=True,
                 )
             )
         else:
@@ -135,6 +173,11 @@ def sync_monitors(session, monitor_configs: Iterable[MonitorConfig]) -> None:
             monitor.recovery_threshold = cfg.recovery_threshold
             monitor.degraded_latency_ms = cfg.degraded_latency_ms
             monitor.channels = list(cfg.channels)
+            monitor.enabled = True
+
+    for name, monitor in existing.items():
+        if name not in configured and monitor.enabled:
+            _disable_monitor(session, monitor)
 
 
 class Scheduler:
@@ -160,7 +203,9 @@ class Scheduler:
 
     async def run(self) -> None:
         with self._database.session() as session:
-            monitor_ids = [m.id for m in session.query(Monitor).all()]
+            monitor_ids = [
+                m.id for m in session.query(Monitor).filter_by(enabled=True).all()
+            ]
 
         self._tasks = [asyncio.create_task(self._run_monitor_loop(mid)) for mid in monitor_ids]
         if self._tasks:
@@ -196,7 +241,7 @@ class Scheduler:
 
             with self._database.session() as session:
                 monitor = session.get(Monitor, monitor_id)
-                interval = monitor.interval_seconds if monitor else None
+                interval = monitor.interval_seconds if monitor and monitor.enabled else None
             if interval is None:
                 return
 
@@ -209,7 +254,7 @@ class Scheduler:
         async with self._semaphore:
             with self._database.session() as session:
                 monitor = session.get(Monitor, monitor_id)
-                if monitor is None:
+                if monitor is None or not monitor.enabled:
                     return
                 checker = self._checkers[monitor.type]
                 target = monitor.target
