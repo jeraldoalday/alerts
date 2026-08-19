@@ -28,6 +28,21 @@ class NotificationsConfig(BaseModel):
     cooldown_seconds: int = Field(default=900, ge=1)
 
 
+class RetentionConfig(BaseModel):
+    """How long check and incident history is kept before `alerts prune` drops it.
+
+    A `None` age means "keep forever" for that table, which is the escape
+    hatch for anyone doing their own archival. `min_check_results_per_monitor`
+    is a floor that survives the age cutoff: a monitor checked every 15
+    minutes would otherwise have its whole history disappear during a quiet
+    stretch, leaving the dashboard with no data to show at all.
+    """
+
+    check_results_days: Optional[int] = Field(default=30, ge=1)
+    resolved_incidents_days: Optional[int] = Field(default=90, ge=1)
+    min_check_results_per_monitor: int = Field(default=20, ge=0)
+
+
 class DashboardConfig(BaseModel):
     enabled: bool = True
     host: str = "127.0.0.1"
@@ -121,6 +136,7 @@ class AppConfig(BaseModel):
     database: DatabaseConfig = Field(default_factory=DatabaseConfig)
     scheduler: SchedulerConfig = Field(default_factory=SchedulerConfig)
     notifications: NotificationsConfig = Field(default_factory=NotificationsConfig)
+    retention: RetentionConfig = Field(default_factory=RetentionConfig)
     dashboard: DashboardConfig = Field(default_factory=DashboardConfig)
     monitors: List[MonitorConfig] = Field(default_factory=list)
     channels: List[ChannelConfig] = Field(default_factory=list)

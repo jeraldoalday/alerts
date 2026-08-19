@@ -326,3 +326,43 @@ def test_monitor_degraded_latency_above_timeout_is_rejected(tmp_path):
         )
 
     assert "degraded_latency_ms" in str(excinfo.value)
+
+
+def test_retention_defaults_when_unset(tmp_path):
+    config = _write_and_load(tmp_path, {"monitors": []})
+
+    assert config.retention.check_results_days == 30
+    assert config.retention.resolved_incidents_days == 90
+    assert config.retention.min_check_results_per_monitor == 20
+
+
+def test_retention_is_configurable(tmp_path):
+    config = _write_and_load(
+        tmp_path,
+        {
+            "retention": {
+                "check_results_days": 7,
+                "resolved_incidents_days": 14,
+                "min_check_results_per_monitor": 5,
+            }
+        },
+    )
+
+    assert config.retention.check_results_days == 7
+    assert config.retention.resolved_incidents_days == 14
+    assert config.retention.min_check_results_per_monitor == 5
+
+
+def test_retention_age_may_be_null_to_keep_forever(tmp_path):
+    config = _write_and_load(
+        tmp_path, {"retention": {"check_results_days": None, "resolved_incidents_days": None}}
+    )
+
+    assert config.retention.check_results_days is None
+    assert config.retention.resolved_incidents_days is None
+
+
+def test_retention_age_of_zero_days_rejected(tmp_path):
+    """Zero would mean "delete everything, including the check that just ran"."""
+    with pytest.raises(ConfigError):
+        _write_and_load(tmp_path, {"retention": {"check_results_days": 0}})

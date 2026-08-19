@@ -14,6 +14,15 @@ notifications:
   # notified again (as an escalation) while that incident stays open.
   cooldown_seconds: 900
 
+retention:
+  # History older than this is deleted by `alerts prune` (run it from cron).
+  # Omit a value, or set it to null, to keep that table forever.
+  check_results_days: 30
+  resolved_incidents_days: 90
+  # Most recent checks per monitor kept regardless of age, so a rarely-checked
+  # monitor doesn't end up with an empty dashboard after a quiet stretch.
+  min_check_results_per_monitor: 20
+
 dashboard:
   # Read-only web dashboard (`alerts serve`) showing monitor status, uptime,
   # and incident history.
