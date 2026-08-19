@@ -2,7 +2,7 @@ from datetime import datetime, timedelta, timezone
 
 from alerts import cli
 from alerts.db import Database
-from alerts.models import CheckResult, Monitor, MonitorType
+from alerts.models import CheckResult, Monitor, MonitorState, MonitorType
 from alerts.notifiers.slack import SlackNotifier
 
 
@@ -183,3 +183,69 @@ def test_main_prune_dry_run_leaves_history_alone(tmp_path):
 
     with Database(database_url).session() as session:
         assert session.query(CheckResult).count() == 1
+
+
+def _status_config(tmp_path) -> tuple:
+    config_file = tmp_path / "config.yaml"
+    database_url = f"sqlite:///{tmp_path / 'test.db'}"
+    config_file.write_text(f"database:\n  url: {database_url}\n")
+    return str(config_file), database_url
+
+
+def test_parse_args_status_defaults():
+    args = cli._parse_args(["status"])
+
+    assert args.command == "status"
+    assert args.config == "config.yaml"
+    assert args.checks == 50
+    assert args.exit_code is False
+
+
+def test_main_status_prints_a_table_and_a_summary(tmp_path, capsys):
+    config_path, database_url = _status_config(tmp_path)
+    database = Database(database_url)
+    database.create_all()
+    with database.session() as session:
+        monitor = Monitor(
+            name="site",
+            type=MonitorType.HTTP,
+            target="https://example.com",
+            state=MonitorState.UP,
+        )
+        session.add(monitor)
+        session.flush()
+        session.add(CheckResult(monitor_id=monitor.id, success=True, latency_ms=12.0))
+
+    exit_code = cli.main(["status", "--config", config_path])
+
+    output = capsys.readouterr().out
+    assert exit_code == 0
+    assert "MONITOR" in output
+    assert "site" in output
+    assert "1 monitor(s): 1 up" in output
+
+
+def test_main_status_exit_code_flag_reports_a_down_monitor(tmp_path, capsys):
+    config_path, database_url = _status_config(tmp_path)
+    database = Database(database_url)
+    database.create_all()
+    with database.session() as session:
+        session.add(
+            Monitor(
+                name="site",
+                type=MonitorType.HTTP,
+                target="https://example.com",
+                state=MonitorState.DOWN,
+            )
+        )
+
+    assert cli.main(["status", "--config", config_path]) == 0, "non-zero exit is opt-in"
+    assert cli.main(["status", "--config", config_path, "--exit-code"]) == 1
+    capsys.readouterr()
+
+
+def test_main_status_on_an_empty_database(tmp_path, capsys):
+    config_path, _ = _status_config(tmp_path)
+
+    assert cli.main(["status", "--config", config_path, "--exit-code"]) == 0
+    assert "No monitors configured." in capsys.readouterr().out
