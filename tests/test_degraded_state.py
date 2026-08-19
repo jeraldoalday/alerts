@@ -21,6 +21,7 @@ def _monitor(**overrides) -> Monitor:
         state=MonitorState.UP,
         consecutive_failures=0,
         consecutive_successes=0,
+        consecutive_fast_checks=0,
     )
     defaults.update(overrides)
     return Monitor(**defaults)
@@ -65,11 +66,16 @@ def test_single_slow_check_slides_up_into_degraded():
     assert monitor.consecutive_successes == 11
 
 
-def test_fast_check_returns_degraded_to_up():
-    monitor = _monitor(state=MonitorState.DEGRADED, consecutive_successes=5)
+def test_fast_checks_return_degraded_to_up_at_the_recovery_threshold():
+    """A banked success streak from the slow stretch doesn't count as recovery."""
+    monitor = _monitor(
+        state=MonitorState.DEGRADED, consecutive_successes=5, recovery_threshold=2
+    )
 
     apply_check_outcome(monitor, _ok(10.0))
+    assert monitor.state == MonitorState.DEGRADED
 
+    apply_check_outcome(monitor, _ok(10.0))
     assert monitor.state == MonitorState.UP
 
 

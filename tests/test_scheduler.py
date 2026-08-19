@@ -26,6 +26,7 @@ def _monitor(**overrides) -> Monitor:
         recovery_threshold=2,
         consecutive_failures=0,
         consecutive_successes=0,
+        consecutive_fast_checks=0,
     )
     defaults.update(overrides)
     return Monitor(**defaults)

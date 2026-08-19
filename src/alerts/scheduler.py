@@ -60,29 +60,39 @@ def apply_check_outcome(monitor: Monitor, outcome: CheckOutcome) -> None:
 
     Sliding from UP into DEGRADED takes effect on a single slow check, since
     degradation is a warning worth surfacing promptly and the monitor is
-    still serving. Every other move into a healthy state -- including
-    DEGRADED back to UP -- waits for `recovery_threshold` consecutive
-    successes, so a target sitting on its latency budget doesn't flap.
+    still serving. Every other move into a healthy state waits for
+    `recovery_threshold` consecutive supporting checks, so a target sitting
+    on its latency budget doesn't flap.
+
+    Which streak counts depends on the move. Coming back from DOWN or UNKNOWN
+    is about the check passing at all, so it reads `consecutive_successes`.
+    Leaving DEGRADED is about latency, so it reads `consecutive_fast_checks`:
+    a monitor that has been slow for hours has a long success streak already
+    banked, and spending it on the first fast check would flip the state back
+    on a single sample -- exactly the flapping `recovery_threshold` exists to
+    prevent.
 
     Incident records are not created here -- that's `sync_incident`'s job.
     """
     if outcome.success:
         monitor.consecutive_successes += 1
         monitor.consecutive_failures = 0
-        healthy_state = (
-            MonitorState.DEGRADED
-            if exceeds_latency_budget(monitor, outcome)
-            else MonitorState.UP
-        )
+        is_slow = exceeds_latency_budget(monitor, outcome)
+        monitor.consecutive_fast_checks = 0 if is_slow else monitor.consecutive_fast_checks + 1
+        healthy_state = MonitorState.DEGRADED if is_slow else MonitorState.UP
         if monitor.state == healthy_state:
             return
         if healthy_state == MonitorState.DEGRADED and monitor.state == MonitorState.UP:
             monitor.state = MonitorState.DEGRADED
+        elif monitor.state == MonitorState.DEGRADED:
+            if monitor.consecutive_fast_checks >= monitor.recovery_threshold:
+                monitor.state = MonitorState.UP
         elif monitor.consecutive_successes >= monitor.recovery_threshold:
             monitor.state = healthy_state
     else:
         monitor.consecutive_failures += 1
         monitor.consecutive_successes = 0
+        monitor.consecutive_fast_checks = 0
         if (
             monitor.state != MonitorState.DOWN
             and monitor.consecutive_failures >= monitor.failure_threshold
