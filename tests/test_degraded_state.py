@@ -151,3 +151,76 @@ def test_sync_monitors_clears_a_budget_removed_from_the_config(db):
 
     with db.session() as session:
         assert session.query(Monitor).one().degraded_latency_ms is None
+
+
+def test_alternating_slow_and_fast_checks_do_not_flap():
+    """The scenario recovery_threshold exists for: a target on its budget.
+
+    Alternating one slow check with one fast check must never reach a fast
+    streak of two, so the monitor stays DEGRADED throughout instead of
+    toggling state on every check.
+    """
+    monitor = _monitor(state=MonitorState.UP, recovery_threshold=2)
+
+    apply_check_outcome(monitor, _ok(900.0))
+    assert monitor.state == MonitorState.DEGRADED
+
+    for _ in range(5):
+        apply_check_outcome(monitor, _ok(10.0))
+        assert monitor.state == MonitorState.DEGRADED
+        apply_check_outcome(monitor, _ok(900.0))
+        assert monitor.state == MonitorState.DEGRADED
+
+
+def test_a_slow_check_resets_the_fast_streak():
+    monitor = _monitor(state=MonitorState.DEGRADED, recovery_threshold=3)
+
+    apply_check_outcome(monitor, _ok(10.0))
+    apply_check_outcome(monitor, _ok(10.0))
+    assert monitor.consecutive_fast_checks == 2
+
+    apply_check_outcome(monitor, _ok(900.0))
+    assert monitor.consecutive_fast_checks == 0
+    assert monitor.state == MonitorState.DEGRADED
+
+
+def test_a_failed_check_resets_the_fast_streak():
+    monitor = _monitor(state=MonitorState.DEGRADED, consecutive_fast_checks=4)
+
+    apply_check_outcome(monitor, _fail())
+
+    assert monitor.consecutive_fast_checks == 0
+
+
+def test_recovery_threshold_of_one_leaves_degraded_immediately():
+    monitor = _monitor(state=MonitorState.DEGRADED, recovery_threshold=1)
+
+    apply_check_outcome(monitor, _ok(10.0))
+
+    assert monitor.state == MonitorState.UP
+
+
+def test_a_monitor_without_a_budget_still_counts_fast_checks():
+    """Every check is "fast" when there's no budget, so the streak tracks successes."""
+    monitor = _monitor(degraded_latency_ms=None)
+
+    apply_check_outcome(monitor, _ok(99_999.0))
+    apply_check_outcome(monitor, _ok(99_999.0))
+
+    assert monitor.state == MonitorState.UP
+    assert monitor.consecutive_fast_checks == 2
+
+
+def test_recovery_from_down_through_degraded_needs_fast_checks_to_reach_up():
+    """The full path an outage that recovers slowly walks: DOWN -> DEGRADED -> UP."""
+    monitor = _monitor(state=MonitorState.DOWN, recovery_threshold=2)
+
+    apply_check_outcome(monitor, _ok(800.0))
+    apply_check_outcome(monitor, _ok(800.0))
+    assert monitor.state == MonitorState.DEGRADED
+
+    apply_check_outcome(monitor, _ok(10.0))
+    assert monitor.state == MonitorState.DEGRADED, "one fast check is below the threshold"
+
+    apply_check_outcome(monitor, _ok(10.0))
+    assert monitor.state == MonitorState.UP
