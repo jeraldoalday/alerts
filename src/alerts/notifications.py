@@ -4,7 +4,8 @@ Sits between incident lifecycle (`incidents.sync_incident`) and the
 per-channel notifiers that will actually send. It owns three concerns:
 
 - dedup: a channel already successfully notified of a given
-  `NotificationKind` for an incident isn't notified of it again
+  `NotificationKind` for an incident isn't notified of it again, and a
+  channel never told an incident opened isn't told it resolved either
 - cooldown: while an incident stays open, a channel already notified isn't
   re-notified until `cooldown_seconds` has elapsed since its last
   successful notification
@@ -34,6 +35,27 @@ class NotificationDecision:
     kind: NotificationKind
 
 
+def _needs_resolved_notice(sent: List) -> bool:
+    """Whether a channel should be told this incident resolved.
+
+    Only if it was told the incident existed. A channel that never received
+    an OPENED or ESCALATION gets nothing: "[RECOVERED] api-gateway is back
+    up" is confusing on its own, and worse than silence when the reason it
+    heard nothing was a maintenance window it knew about, or a channel added
+    to the monitor part-way through the outage.
+
+    This also means a channel whose OPENED send kept failing hears nothing
+    at all about a short outage. That is the intended trade: the alternative
+    is announcing a recovery from a problem the recipient was never told
+    about, which reads as a bug in the monitoring rather than a missed page.
+    """
+    if any(n.kind == NotificationKind.RESOLVED for n in sent):
+        return False
+    return any(
+        n.kind in (NotificationKind.OPENED, NotificationKind.ESCALATION) for n in sent
+    )
+
+
 def decide_notifications(
     incident: Incident,
     channel_names: Iterable[str],
@@ -48,7 +70,7 @@ def decide_notifications(
         ]
 
         if incident.state == IncidentState.RESOLVED:
-            if not any(n.kind == NotificationKind.RESOLVED for n in sent):
+            if _needs_resolved_notice(sent):
                 decisions.append(NotificationDecision(channel_name, NotificationKind.RESOLVED))
             continue
 

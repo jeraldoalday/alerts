@@ -188,3 +188,69 @@ def test_resolved_incident_already_notified_is_deduped(db):
         decisions = decide_notifications(incident, ["ops-slack"], cooldown_seconds=300, now=NOW)
 
     assert decisions == []
+
+
+def test_a_channel_never_told_it_opened_is_not_told_it_resolved(db):
+    """Otherwise a channel added mid-incident hears only "[RECOVERED]"."""
+    with db.session() as session:
+        incident = _open_incident(session, state=IncidentState.RESOLVED)
+        session.flush()
+
+        decisions = decide_notifications(incident, ["ops-slack"], cooldown_seconds=300, now=NOW)
+
+    assert decisions == []
+
+
+def test_a_failed_open_send_does_not_earn_a_resolved_notice(db):
+    with db.session() as session:
+        incident = _open_incident(session, state=IncidentState.RESOLVED)
+        _log(
+            session,
+            incident,
+            channel_name="ops-slack",
+            kind=NotificationKind.OPENED,
+            sent_at=NOW,
+            success=False,
+        )
+        session.flush()
+
+        decisions = decide_notifications(incident, ["ops-slack"], cooldown_seconds=300, now=NOW)
+
+    assert decisions == []
+
+
+def test_an_escalated_channel_is_told_it_resolved(db):
+    """The escalation is proof the channel knows about the incident."""
+    with db.session() as session:
+        incident = _open_incident(session, state=IncidentState.RESOLVED)
+        _log(
+            session,
+            incident,
+            channel_name="ops-slack",
+            kind=NotificationKind.ESCALATION,
+            sent_at=NOW,
+        )
+        session.flush()
+
+        decisions = decide_notifications(incident, ["ops-slack"], cooldown_seconds=300, now=NOW)
+
+    assert decisions == [NotificationDecision("ops-slack", NotificationKind.RESOLVED)]
+
+
+def test_only_the_channel_that_was_paged_is_told_it_resolved(db):
+    with db.session() as session:
+        incident = _open_incident(session, state=IncidentState.RESOLVED)
+        _log(
+            session,
+            incident,
+            channel_name="ops-slack",
+            kind=NotificationKind.OPENED,
+            sent_at=NOW,
+        )
+        session.flush()
+
+        decisions = decide_notifications(
+            incident, ["ops-slack", "ops-email"], cooldown_seconds=300, now=NOW
+        )
+
+    assert decisions == [NotificationDecision("ops-slack", NotificationKind.RESOLVED)]
