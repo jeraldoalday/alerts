@@ -10,10 +10,12 @@ from __future__ import annotations
 import os
 from datetime import datetime, time
 from pathlib import Path
-from typing import Any, List, Literal, Optional, Union
+from typing import Any, Dict, List, Literal, Optional, Union
 
 import yaml
 from pydantic import BaseModel, Field, field_validator, model_validator
+
+from alerts.envsubst import missing as missing_env_vars
 
 
 class DatabaseConfig(BaseModel):
@@ -142,6 +144,14 @@ class MaintenanceWindowConfig(BaseModel):
         return not self.monitors or monitor_name in self.monitors
 
 
+# The HTTP methods a monitor may use. All of them are request methods with
+# no body: there is nowhere in a monitor's config to put one, and a POST
+# with an empty body is a different request from the one the operator
+# thinks they configured. HEAD is the cheap one -- it asks the target for
+# the same status code without transferring the page.
+HTTP_METHODS = ("GET", "HEAD", "OPTIONS")
+
+
 class MonitorConfig(BaseModel):
     name: str
     type: Literal["http", "tcp", "dns", "ssl"]
@@ -155,7 +165,68 @@ class MonitorConfig(BaseModel):
     # HTTP only: a substring the response body must contain for the check to
     # pass, on top of the status code matching.
     expected_body_contains: Optional[str] = Field(default=None, min_length=1)
+    # HTTP only: the request method, and headers sent with every check.
+    # Header values may carry `${VAR}` placeholders resolved from the
+    # environment, so an API token never lands in the committed config.
+    method: str = "GET"
+    headers: Dict[str, str] = Field(default_factory=dict)
     channels: List[str] = Field(default_factory=list)
+
+    @field_validator("method")
+    @classmethod
+    def method_is_supported(cls, value: str) -> str:
+        normalised = value.strip().upper()
+        if normalised not in HTTP_METHODS:
+            raise ValueError(
+                f"unsupported HTTP method {value!r}, expected one of {list(HTTP_METHODS)}"
+            )
+        return normalised
+
+    @field_validator("headers")
+    @classmethod
+    def header_names_are_not_blank(cls, headers: Dict[str, str]) -> Dict[str, str]:
+        blank = [name for name in headers if not name.strip()]
+        if blank:
+            raise ValueError("header names must not be blank")
+        return headers
+
+    @model_validator(mode="after")
+    def http_only_fields_are_on_http_monitors(self) -> "MonitorConfig":
+        """Reject HTTP request options on a check that issues no HTTP request.
+
+        Silently ignoring them is the failure mode worth avoiding: an
+        operator who puts an `Authorization` header on a TCP monitor believes
+        the endpoint is being checked as an authenticated client, when only
+        its port is being opened.
+        """
+        if self.type == "http":
+            return self
+        wrong: List[str] = []
+        if self.method != "GET":
+            wrong.append("method")
+        if self.headers:
+            wrong.append("headers")
+        if wrong:
+            raise ValueError(
+                f"monitor {self.name!r} sets {', '.join(wrong)} but is a "
+                f"{self.type!r} monitor, which issues no HTTP request"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def head_requests_have_no_body_to_assert_on(self) -> "MonitorConfig":
+        """Reject a body assertion on a method that never returns a body.
+
+        A HEAD response carries headers only, so the assertion could never
+        match and every check would fail -- reporting an endpoint as down
+        because of how it is being asked, not how it is behaving.
+        """
+        if self.method == "HEAD" and self.expected_body_contains is not None:
+            raise ValueError(
+                f"monitor {self.name!r} asserts on the response body but uses "
+                "HEAD, which returns no body"
+            )
+        return self
 
     @model_validator(mode="after")
     def body_assertion_applies_to_the_monitor_type(self) -> "MonitorConfig":
@@ -311,6 +382,27 @@ class AppConfig(BaseModel):
                     f"monitor {monitor.name!r} references unknown channel(s): {unknown}"
                 )
 
+    def validate_monitor_header_env_refs(self) -> None:
+        """Reject a header placeholder naming a variable that isn't set.
+
+        Header values are stored as written and expanded per check, so an
+        unresolvable placeholder would otherwise surface as the target
+        rejecting the request -- an outage that looks like the service's
+        fault. Checking at load time turns a typo in a variable name into a
+        startup error naming it.
+        """
+        for monitor in self.monitors:
+            unresolved: List[str] = []
+            for value in monitor.headers.values():
+                unresolved.extend(
+                    name for name in missing_env_vars(value) if name not in unresolved
+                )
+            if unresolved:
+                raise ValueError(
+                    f"monitor {monitor.name!r} has header(s) referencing unset "
+                    f"environment variable(s): {unresolved}"
+                )
+
     def validate_maintenance_monitor_refs(self) -> None:
         """Reject a maintenance window naming a monitor that doesn't exist.
 
@@ -352,6 +444,7 @@ def load_config(path: Union[str, Path]) -> AppConfig:
     try:
         config = AppConfig.model_validate(raw)
         config.validate_monitor_channel_refs()
+        config.validate_monitor_header_env_refs()
         config.validate_maintenance_monitor_refs()
     except Exception as exc:  # pydantic.ValidationError or ValueError
         raise ConfigError(f"invalid config in {config_path}: {exc}") from exc
