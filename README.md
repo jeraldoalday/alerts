@@ -63,10 +63,10 @@ alerts status --config config.yaml
 ```
 
 ```
-MONITOR      TYPE  STATE     UPTIME  LATENCY  LAST CHECK  NOTE
-api-gateway  http  up        100.0%  87ms     12s ago
-main-site    http  degraded  99.8%   1624ms   8s ago
-legacy-db    tcp   down      41.0%   -        30s ago     open incident, 2h 5m
+MONITOR      TYPE  STATE     UPTIME  LATENCY  P95     LAST CHECK  NOTE
+api-gateway  http  up        100.0%  87ms     104ms   12s ago
+main-site    http  degraded  99.8%   1624ms   3980ms  8s ago
+legacy-db    tcp   down      41.0%   -        -       30s ago     open incident, 2h 5m
 
 3 monitor(s): 1 up, 1 degraded, 1 down
 ```
@@ -168,8 +168,8 @@ A mean latency hides exactly the requests people complain about: nineteen
 checks at 90ms and one at four seconds average out to a number that looks
 healthy. Everywhere a mean is reported, p50, p95, and p99 over the same
 window are reported next to it -- the index table, a monitor's detail page,
-both `/api/monitors` routes (as a `latency_percentiles` object), and
-`/metrics`.
+both `/api/monitors` routes (as a `latency_percentiles` object), `/metrics`,
+and the `alerts status` table.
 
 They are nearest-rank percentiles, so every figure is a latency some check
 actually recorded rather than an interpolation between two that never

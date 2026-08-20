@@ -48,7 +48,17 @@ def test_table_has_a_header_and_one_line_per_monitor():
     output = format_status_table([_row(name="a"), _row(name="b")], now=NOW)
 
     lines = output.splitlines()
-    assert lines[0].split() == ["MONITOR", "TYPE", "STATE", "UPTIME", "LATENCY", "LAST", "CHECK", "NOTE"]
+    assert lines[0].split() == [
+        "MONITOR",
+        "TYPE",
+        "STATE",
+        "UPTIME",
+        "LATENCY",
+        "P95",
+        "LAST",
+        "CHECK",
+        "NOTE",
+    ]
     assert len(lines) == 3
 
 

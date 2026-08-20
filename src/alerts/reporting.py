@@ -23,7 +23,7 @@ from alerts.timeutil import as_utc_naive, utcnow
 from alerts.web import queries
 from alerts.web.stats import compute_uptime_stats
 
-_COLUMNS = ("MONITOR", "TYPE", "STATE", "UPTIME", "LATENCY", "LAST CHECK", "NOTE")
+_COLUMNS = ("MONITOR", "TYPE", "STATE", "UPTIME", "LATENCY", "P95", "LAST CHECK", "NOTE")
 _MAINTENANCE_COLUMNS = ("WINDOW", "SCHEDULE", "MONITORS", "STATUS")
 _INCIDENT_COLUMNS = ("MONITOR", "STARTED", "DURATION", "STATE", "CAUSE")
 
@@ -45,6 +45,10 @@ class StatusRow:
     last_checked_at: Optional[datetime]
     open_incident_since: Optional[datetime]
     paused: bool = False
+    # Defaulted rather than required so a row built by hand -- in a test, or
+    # by anything assembling this table from somewhere other than
+    # `collect_status_rows` -- doesn't have to invent a percentile.
+    p95_latency_ms: Optional[float] = None
 
     @property
     def is_down(self) -> bool:
@@ -81,6 +85,7 @@ def collect_status_rows(session: Session, *, checks_window: int = 50) -> List[St
                 state=monitor.state,
                 uptime_percentage=stats.uptime_percentage,
                 average_latency_ms=stats.average_latency_ms,
+                p95_latency_ms=stats.p95_latency_ms,
                 last_checked_at=checks[0].checked_at if checks else None,
                 open_incident_since=incident.started_at if incident else None,
                 paused=monitor.is_paused,
@@ -121,15 +126,19 @@ def _note(row: StatusRow, now: datetime) -> str:
     return f"open incident, {down_for}"
 
 
+def _latency(value: Optional[float]) -> str:
+    return "-" if value is None else f"{value:.0f}ms"
+
+
 def _cells(row: StatusRow, now: datetime) -> List[str]:
     uptime = "-" if row.uptime_percentage is None else f"{row.uptime_percentage:.1f}%"
-    latency = "-" if row.average_latency_ms is None else f"{row.average_latency_ms:.0f}ms"
     return [
         row.name,
         row.type,
         row.state.value,
         uptime,
-        latency,
+        _latency(row.average_latency_ms),
+        _latency(row.p95_latency_ms),
         _relative_age(row.last_checked_at, now),
         _note(row, now),
     ]
