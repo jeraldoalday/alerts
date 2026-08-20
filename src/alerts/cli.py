@@ -1,4 +1,4 @@
-"""Command-line entrypoint: `alerts run|serve|status|maintenance|prune [--config PATH]`."""
+"""Command-line entrypoint: `alerts run|serve|status|incidents|maintenance|prune`."""
 from __future__ import annotations
 
 import argparse
@@ -11,8 +11,11 @@ from alerts.config import load_config
 from alerts.db import Database
 from alerts.notifiers.registry import build_notifiers
 from alerts.reporting import (
+    collect_incident_rows,
     collect_maintenance_rows,
     collect_status_rows,
+    format_incident_summary,
+    format_incident_table,
     format_maintenance_summary,
     format_maintenance_table,
     format_status_summary,
@@ -49,6 +52,35 @@ def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         "--exit-code",
         action="store_true",
         help="Exit 1 if any monitor is down, for use as a scripted check.",
+    )
+
+    incidents_parser = subparsers.add_parser(
+        "incidents", help="Report recent incidents, their durations, and mean recovery."
+    )
+    incidents_parser.add_argument("--config", default="config.yaml", help="Path to config.yaml")
+    incidents_parser.add_argument("--monitor", help="Only incidents for this monitor.")
+    incidents_parser.add_argument(
+        "--days",
+        type=int,
+        default=7,
+        help="How far back to report (default: 7). 0 reports everything still kept.",
+    )
+    incidents_parser.add_argument(
+        "--limit",
+        type=int,
+        default=50,
+        help="Most incidents to list (default: 50). The summary covers the listed ones.",
+    )
+    incidents_parser.add_argument(
+        "--open",
+        dest="open_only",
+        action="store_true",
+        help="Only incidents that are still open.",
+    )
+    incidents_parser.add_argument(
+        "--exit-code",
+        action="store_true",
+        help="Exit 1 if any reported incident is still open.",
     )
 
     maintenance_parser = subparsers.add_parser(
@@ -128,6 +160,46 @@ def _status(config_path: str, checks_window: int, use_exit_code: bool) -> int:
     return 1 if use_exit_code and any(row.is_down for row in rows) else 0
 
 
+def _incidents(
+    config_path: str,
+    *,
+    monitor: Optional[str],
+    days: int,
+    limit: int,
+    open_only: bool,
+    use_exit_code: bool,
+) -> int:
+    """Print the incident report, returning the process exit code.
+
+    `alerts status` answers what is broken now; this answers what has been
+    breaking, which is the question asked in a Monday morning review rather
+    than during an outage. Both read the same live database without starting
+    a scheduler.
+
+    `--days 0` is the escape hatch for "everything": the window becomes
+    unbounded and the report reaches as far back as retention has kept,
+    which is the only honest limit there is.
+    """
+    config = load_config(config_path)
+    database = Database(config.database.url)
+    database.create_all()
+
+    with database.session() as session:
+        rows = collect_incident_rows(
+            session,
+            monitor=monitor,
+            since_days=days if days > 0 else None,
+            open_only=open_only,
+            limit=limit,
+        )
+
+    print(format_incident_table(rows))
+    print()
+    print(format_incident_summary(rows))
+
+    return 1 if use_exit_code and any(row.is_open for row in rows) else 0
+
+
 def _maintenance(config_path: str, monitor: Optional[str], use_exit_code: bool) -> int:
     """Print the maintenance window table, returning the process exit code.
 
@@ -184,6 +256,15 @@ def main(argv: Optional[List[str]] = None) -> int:
         _serve(args.config)
     elif args.command == "status":
         return _status(args.config, checks_window=args.checks, use_exit_code=args.exit_code)
+    elif args.command == "incidents":
+        return _incidents(
+            args.config,
+            monitor=args.monitor,
+            days=args.days,
+            limit=args.limit,
+            open_only=args.open_only,
+            use_exit_code=args.exit_code,
+        )
     elif args.command == "maintenance":
         return _maintenance(args.config, monitor=args.monitor, use_exit_code=args.exit_code)
     elif args.command == "prune":
