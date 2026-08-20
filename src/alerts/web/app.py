@@ -59,11 +59,23 @@ class DashboardApp:
         self._recent_checks_limit = recent_checks_limit
 
     def __call__(self, environ: dict, start_response: StartResponse) -> Iterable[bytes]:
-        if environ.get("REQUEST_METHOD", "GET") != "GET":
+        """Dispatch a request, answering HEAD as GET without the body.
+
+        A HEAD response carries the status and headers a GET would, and no
+        body -- so the route runs normally and only the body is dropped on
+        the way out. Rejecting HEAD outright, as this used to, breaks the
+        cheapest kind of uptime check there is, including the one this
+        project's own HTTP monitors can now be configured to make against
+        `/healthz`.
+        """
+        method = environ.get("REQUEST_METHOD", "GET")
+        if method not in ("GET", "HEAD"):
             return self._respond(start_response, "405 Method Not Allowed", b"method not allowed")
 
-        path = _decoded_path(environ)
+        body = self._dispatch(_decoded_path(environ), start_response)
+        return [] if method == "HEAD" else body
 
+    def _dispatch(self, path: str, start_response: StartResponse) -> Iterable[bytes]:
         if path == "/":
             return self._index(start_response)
         if path == "/healthz":

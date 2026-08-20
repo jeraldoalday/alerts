@@ -80,6 +80,42 @@ def test_unknown_route_returns_404(db):
     assert status == "404 Not Found"
 
 
+def test_head_returns_the_get_headers_with_no_body(db):
+    """The cheapest uptime check there is, including against this app."""
+    app = DashboardApp(db)
+
+    get_status, get_headers, get_body = _call(app, "/healthz")
+    head_status, head_headers, head_body = _call(app, "/healthz", method="HEAD")
+
+    assert head_status == get_status == "200 OK"
+    assert head_headers == get_headers, "same content type and length as the GET"
+    assert head_body == b""
+    assert get_body != b""
+
+
+def test_head_on_a_missing_monitor_still_reports_404(db):
+    app = DashboardApp(db)
+
+    status, _, body = _call(app, "/monitors/nope", method="HEAD")
+
+    assert status == "404 Not Found"
+    assert body == b""
+
+
+def test_head_on_the_index_runs_the_route(db):
+    """The Content-Length has to describe the page a GET would have returned."""
+    with db.session() as session:
+        _monitor(session, name="site")
+    app = DashboardApp(db)
+
+    _, head_headers, head_body = _call(app, "/", method="HEAD")
+    _, get_headers, get_body = _call(app, "/")
+
+    assert head_body == b""
+    assert head_headers["Content-Length"] == get_headers["Content-Length"]
+    assert b"site" in get_body
+
+
 def test_non_get_method_returns_405(db):
     app = DashboardApp(db)
 
