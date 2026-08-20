@@ -62,6 +62,17 @@ def _format_value(value: float) -> str:
     return repr(float(value))
 
 
+def _quantile_label(percent: float) -> str:
+    """A percentile as the 0-1 `quantile` label value Prometheus expects.
+
+    The convention is a fraction ("0.95"), not a percentage ("95"), and
+    dashboards written against other exporters filter on exactly that
+    string. `_format_value` is reused so 50 renders as "0.5" rather than
+    "0.5000000000000001".
+    """
+    return _format_value(percent / 100)
+
+
 class _Family:
     """One metric family: its help text, its type, and its samples."""
 
@@ -97,6 +108,12 @@ def render_metrics(
     `state` label and a 0/1 value, which is how a scraper expects an
     enum-valued gauge: it makes `alerts_monitor_state{state="down"} == 1` a
     working alert rule without needing to know the numeric encoding.
+
+    Latency percentiles are exported the same way, as a gauge carrying a
+    `quantile` label, rather than as a `summary`. A summary's quantiles are
+    computed by the process being measured over its own lifetime; these are
+    computed here over a fixed window of recent checks, and claiming the type
+    would promise the `_sum` and `_count` series a summary comes with.
     """
     state_family = _Family(
         "alerts_monitor_state",
@@ -118,6 +135,10 @@ def render_metrics(
         "alerts_monitor_latency_budget_ms",
         "Latency at or above which a successful check counts as degraded.",
     )
+    quantile_family = _Family(
+        "alerts_monitor_latency_quantile_ms",
+        "Latency percentile in milliseconds over the recent checks.",
+    )
 
     exported = 0
     for monitor, stats in rows:
@@ -134,6 +155,9 @@ def render_metrics(
             uptime_family.add(stats.uptime_percentage / 100, labels)
         if stats.average_latency_ms is not None:
             latency_family.add(stats.average_latency_ms, labels)
+        for percent, value in stats.latency_percentiles.items():
+            if value is not None:
+                quantile_family.add(value, [*labels, ("quantile", _quantile_label(percent))])
         if monitor.degraded_latency_ms is not None:
             budget_family.add(monitor.degraded_latency_ms, labels)
 
@@ -151,6 +175,7 @@ def render_metrics(
         state_family,
         uptime_family,
         latency_family,
+        quantile_family,
         checks_family,
         budget_family,
     ):

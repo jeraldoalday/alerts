@@ -9,14 +9,26 @@ nothing holds the session open across the WSGI response iterator.
 from __future__ import annotations
 
 import json
-from typing import Any, Callable, Dict, Iterable, List, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 from urllib.parse import unquote
 
 from alerts.db import Database
 from alerts.web import metrics, queries, render
-from alerts.web.stats import compute_uptime_stats, summarize_states
+from alerts.web.stats import UptimeStats, compute_uptime_stats, summarize_states
 
 StartResponse = Callable[[str, List[Tuple[str, str]]], Any]
+
+
+def _percentile_payload(stats: UptimeStats) -> Dict[str, Optional[float]]:
+    """Latency percentiles as a JSON object keyed "p50", "p95", "p99".
+
+    Nested under one key rather than flattened into three siblings so a
+    client can iterate the percentiles it was given instead of hard-coding
+    which three this version happens to report. Keys are the "pNN" spelling
+    rather than bare numbers, because a JSON object key has to be a string
+    and "95" invites a client to parse it back into one anyway.
+    """
+    return {f"p{percent}": value for percent, value in stats.latency_percentiles.items()}
 
 
 def _decoded_path(environ: dict) -> str:
@@ -117,6 +129,7 @@ class DashboardApp:
                 "degraded_latency_ms": monitor.degraded_latency_ms,
                 "uptime_percentage": stats.uptime_percentage,
                 "average_latency_ms": stats.average_latency_ms,
+                "latency_percentiles": _percentile_payload(stats),
                 "recent_checks": [
                     {
                         "checked_at": check.checked_at.isoformat(),
@@ -158,6 +171,7 @@ class DashboardApp:
                         "degraded_latency_ms": monitor.degraded_latency_ms,
                         "uptime_percentage": stats.uptime_percentage,
                         "average_latency_ms": stats.average_latency_ms,
+                        "latency_percentiles": _percentile_payload(stats),
                     }
                 )
         return self._respond_json(start_response, "200 OK", {"monitors": payload})
