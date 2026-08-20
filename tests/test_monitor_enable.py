@@ -41,6 +41,17 @@ def _monitor(name: str = "site", **overrides) -> Monitor:
     return Monitor(**defaults)
 
 
+class _FailingChecker:
+    """Always reports the target as broken, so a monitor stays DOWN."""
+
+    def __init__(self):
+        self.calls = 0
+
+    async def check(self, request: CheckRequest) -> CheckOutcome:
+        self.calls += 1
+        return CheckOutcome(success=False, error_message="connection refused")
+
+
 class _StubChecker:
     def __init__(self):
         self.calls = 0
@@ -170,3 +181,111 @@ async def test_a_monitor_disabled_mid_run_stops_being_checked(db):
     await run_task
 
     assert checker.calls == 1
+
+
+def test_re_enabling_resets_the_state_frozen_at_the_pause(db):
+    with db.session() as session:
+        session.add(
+            _monitor(
+                "site",
+                enabled=False,
+                state=MonitorState.DOWN,
+                consecutive_failures=7,
+                consecutive_successes=0,
+                consecutive_fast_checks=0,
+            )
+        )
+
+    with db.session() as session:
+        sync_monitors(session, [_config("site")])
+
+    with db.session() as session:
+        monitor = session.query(Monitor).one()
+        assert monitor.enabled is True
+        assert monitor.state == MonitorState.UNKNOWN
+        assert monitor.consecutive_failures == 0
+
+
+def test_re_enabling_clears_a_banked_success_streak(db):
+    """A streak earned before the pause says nothing about the target now."""
+    with db.session() as session:
+        session.add(
+            _monitor(
+                "site",
+                enabled=False,
+                state=MonitorState.UP,
+                consecutive_successes=42,
+                consecutive_fast_checks=42,
+            )
+        )
+
+    with db.session() as session:
+        sync_monitors(session, [_config("site")])
+
+    with db.session() as session:
+        monitor = session.query(Monitor).one()
+        assert monitor.consecutive_successes == 0
+        assert monitor.consecutive_fast_checks == 0
+
+
+def test_an_active_monitor_keeps_its_state_across_a_sync(db):
+    """Only the pause -> active edge resets; a plain config edit must not.
+
+    `sync_monitors` runs on every `alerts run`, so resetting an enabled
+    monitor here would throw away the streak of any monitor whose config was
+    touched -- and restart the failure threshold of one that is mid-outage.
+    """
+    with db.session() as session:
+        session.add(
+            _monitor(
+                "site",
+                enabled=True,
+                state=MonitorState.DOWN,
+                consecutive_failures=5,
+            )
+        )
+
+    with db.session() as session:
+        sync_monitors(session, [_config("site", target="https://example.org")])
+
+    with db.session() as session:
+        monitor = session.query(Monitor).one()
+        assert monitor.state == MonitorState.DOWN
+        assert monitor.consecutive_failures == 5
+        assert monitor.target == "https://example.org"
+
+
+async def test_a_re_enabled_monitor_still_broken_opens_a_fresh_incident(db):
+    """The bug this reset exists for, end to end.
+
+    Pausing a DOWN monitor resolves its incident. Without the reset the row
+    came back still marked DOWN, and since an incident is only opened on the
+    transition *into* DOWN, a target that never recovered failed check after
+    check with nothing opened and nobody paged.
+    """
+    with db.session() as session:
+        session.add(
+            _monitor(
+                "site",
+                enabled=True,
+                state=MonitorState.DOWN,
+                failure_threshold=1,
+                interval_seconds=3600,
+            )
+        )
+    with db.session() as session:
+        sync_monitors(session, [])  # pause: resolves the open incident, if any
+        sync_monitors(session, [_config("site", failure_threshold=1)])
+
+    checker = _FailingChecker()
+    scheduler = Scheduler(db, checkers={MonitorType.HTTP: checker})
+
+    run_task = asyncio.create_task(scheduler.run())
+    await asyncio.sleep(0.05)
+    await scheduler.stop()
+    await run_task
+
+    with db.session() as session:
+        incidents = session.query(Incident).all()
+        assert len(incidents) == 1
+        assert incidents[0].state == IncidentState.OPEN
