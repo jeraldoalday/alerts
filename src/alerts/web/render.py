@@ -87,6 +87,26 @@ def _format_timestamp(value) -> str:
     return escape(value.isoformat(timespec="seconds")) if value is not None else "&mdash;"
 
 
+def _percentile_summary(stats: UptimeStats) -> str:
+    """The latency percentiles as one muted line of "p50 12 ms" pairs.
+
+    Rendered next to the mean rather than instead of it: the mean is the
+    number people quote, the percentiles are the ones that explain why it
+    doesn't match what anyone experienced.
+
+    A window with no recorded latency at all renders nothing, rather than
+    three em dashes that take up a line to say the same absence the mean
+    beside them already shows.
+    """
+    percentiles = stats.latency_percentiles
+    if all(value is None for value in percentiles.values()):
+        return ""
+    pairs = " &nbsp; ".join(
+        f"p{percent} {_format_latency(value)}" for percent, value in percentiles.items()
+    )
+    return f'<span class="muted">{pairs}</span>'
+
+
 def _summary_tile(label: str, count: int, color: Optional[str] = None) -> str:
     style = f' style="color:{color}"' if color and count else ""
     return (
@@ -136,14 +156,16 @@ def render_index(
             f"<td>{_state_badge(monitor.state)}</td>"
             f"<td>{_format_percentage(stats.uptime_percentage)}</td>"
             f"<td>{_format_latency(stats.average_latency_ms)}</td>"
+            f"<td>{_format_latency(stats.p95_latency_ms)}</td>"
             f"<td>{_format_timestamp(last_checked_at)}</td>"
             "</tr>"
         )
 
-    empty_row = '<tr><td colspan="6" class="muted">No monitors configured.</td></tr>'
+    empty_row = '<tr><td colspan="7" class="muted">No monitors configured.</td></tr>'
     table = (
         "<table><thead><tr><th>Monitor</th><th>Type</th><th>State</th>"
-        "<th>Uptime</th><th>Avg latency</th><th>Last checked</th></tr></thead>"
+        "<th>Uptime</th><th>Avg latency</th><th>p95 latency</th>"
+        "<th>Last checked</th></tr></thead>"
         f"<tbody>{''.join(body_rows) or empty_row}</tbody>"
         "</table>"
     )
@@ -230,6 +252,7 @@ def render_monitor_detail(
         f"&nbsp; uptime {_format_percentage(stats.uptime_percentage)} "
         f"&nbsp; avg latency {_format_latency(stats.average_latency_ms)}"
         f"{_latency_budget_note(monitor)}</p>"
+        f"<p>{_percentile_summary(stats)}</p>"
         f"<h2>Recent checks</h2>{checks_table}"
         f"<h2>Incidents</h2>{incidents_table}"
     )
