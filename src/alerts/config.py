@@ -15,6 +15,8 @@ from typing import Any, Dict, List, Literal, Optional, Union
 import yaml
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from alerts.envsubst import expand as expand_env
+from alerts.envsubst import expand_mapping as expand_env_mapping
 from alerts.envsubst import missing as missing_env_vars
 
 
@@ -286,10 +288,37 @@ class SlackChannelConfig(BaseModel):
 
 
 class WebhookChannelConfig(BaseModel):
+    """A generic webhook target: a URL, and headers sent with every POST.
+
+    Both the URL and the header values may carry `${VAR}` placeholders
+    resolved from the environment, which is what keeps a receiver's token out
+    of the committed config. Plenty of webhook endpoints put the secret in
+    the URL itself rather than in a header, so restricting expansion to
+    headers would have left half of them uncoverable.
+
+    Expansion happens when the notifier is built, at startup, so a missing
+    variable is a startup failure rather than a page that doesn't arrive.
+    """
+
     name: str
     type: Literal["webhook"]
     url: str
-    headers: dict = Field(default_factory=dict)
+    headers: Dict[str, str] = Field(default_factory=dict)
+
+    @property
+    def resolved_url(self) -> str:
+        return expand_env(self.url)
+
+    @property
+    def resolved_headers(self) -> Dict[str, str]:
+        return expand_env_mapping(self.headers)
+
+    def env_placeholder_problems(self) -> List[str]:
+        """Variable names referenced here that aren't set in the environment."""
+        unresolved = list(missing_env_vars(self.url))
+        for value in self.headers.values():
+            unresolved.extend(name for name in missing_env_vars(value) if name not in unresolved)
+        return unresolved
 
 
 class EmailChannelConfig(BaseModel):
@@ -403,6 +432,27 @@ class AppConfig(BaseModel):
                     f"environment variable(s): {unresolved}"
                 )
 
+    def validate_channel_env_refs(self) -> None:
+        """Reject a channel placeholder naming a variable that isn't set.
+
+        The same reasoning as the monitor headers above, one step worse in
+        consequence: a webhook whose token can't be resolved fails at the
+        moment there is something to say, and a notification that never
+        arrives is indistinguishable from nothing having gone wrong.
+        """
+        for channel in self.channels:
+            if not isinstance(channel, WebhookChannelConfig):
+                # Slack and email reference their secrets by variable name
+                # through `*_env` fields, which resolve on access and raise
+                # their own error naming the variable.
+                continue
+            unresolved = channel.env_placeholder_problems()
+            if unresolved:
+                raise ValueError(
+                    f"channel {channel.name!r} references unset environment "
+                    f"variable(s): {unresolved}"
+                )
+
     def validate_maintenance_monitor_refs(self) -> None:
         """Reject a maintenance window naming a monitor that doesn't exist.
 
@@ -445,6 +495,7 @@ def load_config(path: Union[str, Path]) -> AppConfig:
         config = AppConfig.model_validate(raw)
         config.validate_monitor_channel_refs()
         config.validate_monitor_header_env_refs()
+        config.validate_channel_env_refs()
         config.validate_maintenance_monitor_refs()
     except Exception as exc:  # pydantic.ValidationError or ValueError
         raise ConfigError(f"invalid config in {config_path}: {exc}") from exc

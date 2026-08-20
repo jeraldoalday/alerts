@@ -19,7 +19,10 @@ def build_notifier(channel: ChannelConfig) -> Notifier:
     if isinstance(channel, SlackChannelConfig):
         return SlackNotifier(channel.webhook_url)
     if isinstance(channel, WebhookChannelConfig):
-        return WebhookNotifier(channel.url, headers=channel.headers)
+        # Resolved here rather than at load time, so a token lives in the
+        # notifier that needs it instead of in the config object everything
+        # else in the process is holding a reference to.
+        return WebhookNotifier(channel.resolved_url, headers=channel.resolved_headers)
     if isinstance(channel, EmailChannelConfig):
         return EmailNotifier(
             smtp_host=channel.smtp_host,
