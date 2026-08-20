@@ -25,6 +25,9 @@ Early development. Current state:
 - [x] Response body assertions for HTTP monitors
 - [x] Maintenance windows suppressing alerts during planned work
 - [x] Prometheus `/metrics` endpoint
+- [x] Latency percentiles (p50/p95/p99) everywhere latency is reported
+- [x] Request method and headers for HTTP monitors, with `${VAR}` secrets
+- [x] `alerts incidents` and `/api/incidents` for incident history and MTTR
 
 See open issues and commit history for day-to-day progress.
 
@@ -70,6 +73,35 @@ legacy-db    tcp   down      41.0%   -        30s ago     open incident, 2h 5m
 
 `--exit-code` makes it exit 1 when anything is down, for use as a scripted
 check; without it the command always exits 0.
+
+Report the incidents behind that status -- what has been breaking, for how
+long, and how quickly it came back:
+
+```bash
+alerts incidents --config config.yaml
+```
+
+```
+MONITOR      STARTED           DURATION      STATE     CAUSE
+main-site    2026-08-21 09:55  2h 5m so far  open      timed out after 10s
+api-gateway  2026-08-21 07:00  42m           resolved  expected status 200, got 502
+
+2 incident(s), 1 still open, 2h 47m total downtime, mean recovery 42m
+```
+
+The window is the last 7 days by default; `--days 30` widens it and `--days 0`
+reaches as far back as retention has kept. `--monitor NAME` narrows it to one
+service, `--open` lists only what hasn't recovered, and `--exit-code` exits 1
+while any reported incident is open, so a deploy script can refuse to ship
+into an ongoing outage.
+
+Mean recovery covers the resolved incidents only. An open one hasn't
+recovered, and folding its running duration into the average would make an
+outage appear to improve the longer it went on. Total downtime does include
+it, because that time is being lost right now. An incident that is still open
+is reported however old it is, even when it started before the window --
+losing the one outage that is still happening is the one thing a report of
+outages must not do.
 
 Delete check and incident history that has aged past the `retention` policy.
 There's no automatic pruning -- it's a bulk write against the database the
@@ -118,8 +150,31 @@ The dashboard listens on `dashboard.host:dashboard.port` from the config
   checks and incidents
 - `/api/summary` — JSON state tally and open-incident count; a constant-size
   response whatever the monitor count, for a wallboard or a polling check
+- `/api/incidents` — JSON incident feed across every monitor, the counterpart
+  of `alerts incidents`. Takes `?monitor=`, `?open`, `?days=`, and `?limit=`,
+  and gives each incident a server-computed `duration_seconds` so no consumer
+  has to guess what the server's clock says. A parameter that is out of range
+  or isn't a number is a 400 rather than a silently shortened list
 - `/metrics` — Prometheus exposition of the same picture (see below)
 - `/healthz` — liveness check for the dashboard process itself
+
+Every route answers `HEAD` with the headers a `GET` would return and no body,
+so the cheapest possible uptime check works against the dashboard too --
+including from an `alerts` monitor of its own.
+
+## Latency percentiles
+
+A mean latency hides exactly the requests people complain about: nineteen
+checks at 90ms and one at four seconds average out to a number that looks
+healthy. Everywhere a mean is reported, p50, p95, and p99 over the same
+window are reported next to it -- the index table, a monitor's detail page,
+both `/api/monitors` routes (as a `latency_percentiles` object), and
+`/metrics`.
+
+They are nearest-rank percentiles, so every figure is a latency some check
+actually recorded rather than an interpolation between two that never
+happened. p95 is also the figure a `degraded_latency_ms` budget is best set
+against.
 
 ## Metrics
 
@@ -134,8 +189,15 @@ dashboard never disagree:
 | `alerts_monitor_state{monitor,type,state}` | 1 for the state a monitor is in, 0 for the others |
 | `alerts_monitor_uptime_ratio{monitor,type}` | Successful fraction of the recent checks |
 | `alerts_monitor_latency_ms{monitor,type}` | Mean latency over the recent checks |
+| `alerts_monitor_latency_quantile_ms{monitor,type,quantile}` | Latency percentile over the recent checks |
 | `alerts_monitor_checks{monitor,type}` | How many checks those two figures cover |
 | `alerts_monitor_latency_budget_ms{monitor,type}` | The monitor's `degraded_latency_ms`, if set |
+
+The quantile label carries the 0-1 fraction other exporters use
+(`quantile="0.95"`), so a dashboard panel written against one of them works
+unchanged. It stays a gauge rather than becoming a `summary`: a summary's
+quantiles cover the measured process's own lifetime, while these cover a
+fixed window of recent checks.
 
 The state gauge is exported once per state so an alert rule can be written
 as `alerts_monitor_state{state="down"} == 1` without knowing any numeric
@@ -204,6 +266,42 @@ An HTTP monitor can also require a substring in the response body via
 `expected_body_contains`, which catches the health endpoint that answers
 200 with a body naming the dependency that's broken.
 
+## HTTP request options
+
+An HTTP monitor controls how the request is made, not just what is expected
+back:
+
+```yaml
+monitors:
+  - name: api-gateway
+    type: http
+    target: https://api.example.com/healthz
+    headers:
+      Authorization: "Bearer ${API_TOKEN}"
+      Accept: application/json
+
+  - name: dashboard-itself
+    type: http
+    target: http://127.0.0.1:8080/healthz
+    method: HEAD
+```
+
+`method` is `GET`, `HEAD`, or `OPTIONS` — all of them request methods with no
+body, since there is nowhere in a monitor's config to put one. `HEAD` is the
+cheap option for a target whose status code is the whole signal; it can't be
+combined with `expected_body_contains`, which is rejected at load time rather
+than failing every check.
+
+Header values may contain `${VAR}` placeholders resolved from the
+environment, so a token stays out of the committed config *and* out of the
+database — the placeholder is what gets stored, and it is expanded fresh on
+each check. `load_config` refuses to start if a placeholder names a variable
+that isn't set, and a variable that disappears later is recorded as a failed
+check naming it rather than as an unexplained 401.
+
+The same placeholders work in a `webhook` channel's `url` and `headers`, for
+receivers that want their token in the path rather than in a header.
+
 ## Project layout
 
 ```
@@ -218,10 +316,11 @@ src/alerts/
   notifiers/      # Per-channel senders (Slack, webhook, email) + registry
   web/            # Read-only dashboard: WSGI app, HTML rendering, queries, /metrics
   maintenance.py  # Maintenance window schedules and whether one is active
-  reporting.py    # Plain-text tables for `alerts status` and `alerts maintenance`
+  envsubst.py     # ${VAR} expansion for config values with a secret inside
+  reporting.py    # Plain-text tables for `alerts status`, `incidents`, `maintenance`
   retention.py    # Deletes history past the configured retention window
   timeutil.py     # Shared UTC helpers (everything stored is UTC, naive on read)
-  cli.py          # `alerts run` / `serve` / `status` / `maintenance` / `prune`
+  cli.py          # `alerts run` / `serve` / `status` / `incidents` / `maintenance` / `prune`
 migrations/       # Alembic migrations
 tests/
 ```
