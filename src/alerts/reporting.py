@@ -11,7 +11,7 @@ handful of rows is not worth adding to it.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import List, Optional, Sequence
 
 from sqlalchemy.orm import Session
@@ -25,6 +25,12 @@ from alerts.web.stats import compute_uptime_stats
 
 _COLUMNS = ("MONITOR", "TYPE", "STATE", "UPTIME", "LATENCY", "LAST CHECK", "NOTE")
 _MAINTENANCE_COLUMNS = ("WINDOW", "SCHEDULE", "MONITORS", "STATUS")
+_INCIDENT_COLUMNS = ("MONITOR", "STARTED", "DURATION", "STATE", "CAUSE")
+
+# A cause is a checker's error message, which can run to a whole TLS
+# handshake failure. Truncated so one long message doesn't push the other
+# columns off an 80-column terminal; the full text is on the dashboard.
+_CAUSE_WIDTH = 44
 
 
 @dataclass(frozen=True)
@@ -240,6 +246,139 @@ def format_maintenance_summary(rows: Sequence[MaintenanceRow]) -> str:
     """One-line tally of how many windows are configured and active."""
     active = sum(1 for row in rows if row.is_active)
     return f"{len(rows)} window(s), {active} active"
+
+
+@dataclass(frozen=True)
+class IncidentRow:
+    """One incident's line in the `alerts incidents` table."""
+
+    monitor: str
+    state: IncidentState
+    started_at: datetime
+    resolved_at: Optional[datetime]
+    cause: Optional[str]
+
+    @property
+    def is_open(self) -> bool:
+        return self.state == IncidentState.OPEN
+
+    def duration_seconds(self, now: datetime) -> float:
+        """How long the incident lasted, or has lasted so far.
+
+        An open incident is measured against `now`, which is what makes the
+        total downtime figure below keep climbing while something is broken
+        rather than reporting only the outages that have already ended.
+        """
+        end = self.resolved_at if self.resolved_at is not None else now
+        return (as_utc_naive(end) - as_utc_naive(self.started_at)).total_seconds()
+
+
+def collect_incident_rows(
+    session: Session,
+    *,
+    monitor: Optional[str] = None,
+    since_days: Optional[int] = 7,
+    open_only: bool = False,
+    limit: int = 50,
+    now: Optional[datetime] = None,
+) -> List[IncidentRow]:
+    """Build one row per incident, newest first.
+
+    `monitor` names one service; an unknown name yields no rows rather than
+    an error, matching how the dashboard treats a name nothing matches.
+    `since_days=None` drops the time window and reports as far back as
+    retention has kept.
+    """
+    moment = as_utc_naive(now or utcnow())
+    monitor_id: Optional[int] = None
+    if monitor is not None:
+        found = queries.get_monitor_by_name(session, monitor)
+        if found is None:
+            return []
+        monitor_id = found.id
+
+    since = moment - timedelta(days=since_days) if since_days is not None else None
+    names = {m.id: m.name for m in queries.list_monitors(session)}
+    incidents = queries.list_incidents(
+        session, monitor_id=monitor_id, since=since, open_only=open_only, limit=limit
+    )
+    return [
+        IncidentRow(
+            monitor=names.get(incident.monitor_id, f"#{incident.monitor_id}"),
+            state=incident.state,
+            started_at=incident.started_at,
+            resolved_at=incident.resolved_at,
+            cause=incident.cause,
+        )
+        for incident in incidents
+    ]
+
+
+def _truncate(text: str, width: int) -> str:
+    return text if len(text) <= width else text[: width - 1] + "\u2026"
+
+
+def _incident_cells(row: IncidentRow, now: datetime) -> List[str]:
+    duration = format_duration(row.duration_seconds(now))
+    return [
+        row.monitor,
+        as_utc_naive(row.started_at).strftime("%Y-%m-%d %H:%M"),
+        f"{duration} so far" if row.is_open else duration,
+        row.state.value,
+        _truncate(row.cause, _CAUSE_WIDTH) if row.cause else "",
+    ]
+
+
+def format_incident_table(
+    rows: Sequence[IncidentRow], *, now: Optional[datetime] = None
+) -> str:
+    """Render incidents as an aligned plain-text table, newest first."""
+    now = now or utcnow()
+    if not rows:
+        return "No incidents in the reporting window."
+
+    table = [list(_INCIDENT_COLUMNS)] + [_incident_cells(row, now) for row in rows]
+    widths = [
+        max(len(line[column]) for line in table) for column in range(len(_INCIDENT_COLUMNS))
+    ]
+    return "\n".join(
+        "  ".join(cell.ljust(width) for cell, width in zip(line, widths)).rstrip()
+        for line in table
+    )
+
+
+def format_incident_summary(
+    rows: Sequence[IncidentRow], *, now: Optional[datetime] = None
+) -> str:
+    """One-line tally: how many incidents, how much downtime, and the mean recovery.
+
+    Mean time to recovery covers only the resolved incidents, because an open
+    one hasn't recovered and folding its running duration in would drag the
+    average down every time it is recomputed -- an outage getting longer
+    would appear to improve the number. Total downtime does include open
+    incidents, since that time is being lost right now.
+
+    The two figures are deliberately not derived from each other: MTTR is
+    about how quickly things come back, total downtime is about how much
+    service was lost, and one incident that has been open for a week says
+    very different things about each.
+    """
+    now = now or utcnow()
+    if not rows:
+        return "0 incident(s)"
+
+    open_count = sum(1 for row in rows if row.is_open)
+    total_downtime = sum(row.duration_seconds(now) for row in rows)
+    resolved = [row for row in rows if not row.is_open]
+
+    parts = [f"{len(rows)} incident(s)"]
+    if open_count:
+        parts.append(f"{open_count} still open")
+    parts.append(f"{format_duration(total_downtime)} total downtime")
+    if resolved:
+        mttr = sum(row.duration_seconds(now) for row in resolved) / len(resolved)
+        parts.append(f"mean recovery {format_duration(mttr)}")
+    return ", ".join(parts)
 
 
 def format_status_summary(rows: Sequence[StatusRow]) -> str:
