@@ -1,6 +1,9 @@
-# Copy to config.yaml and adjust. Secrets (webhook URLs, SMTP passwords) are
-# never written here directly -- channels reference an environment variable
-# name and the value is resolved at load time (see .env.example).
+# Copy to config.yaml and adjust. Secrets (webhook URLs, SMTP passwords, API
+# tokens) are never written here directly: channels reference an environment
+# variable name through a *_env field, and anywhere a secret is only part of
+# a larger string -- an Authorization header, a webhook URL with a token in
+# the path -- a ${VAR} placeholder is resolved from the environment instead.
+# See .env.example.
 
 database:
   url: sqlite:///./alerts.db
@@ -74,6 +77,23 @@ monitors:
     target: https://api.example.com/healthz
     interval_seconds: 15
     failure_threshold: 2
+    # HTTP monitors only. Header values may reference environment variables
+    # as ${VAR}, so a token never lands in this file; the placeholder is what
+    # gets stored, and it's resolved fresh on every check. A variable that
+    # isn't set is a startup error naming it, not a mystery 401 later.
+    headers:
+      Authorization: "Bearer ${API_TOKEN}"
+      Accept: application/json
+    channels: [ops-slack]
+
+  - name: dashboard-itself
+    type: http
+    # `alerts serve` answers HEAD, so a monitor can watch the dashboard
+    # process without pulling a page down every interval. HEAD returns no
+    # body, so expected_body_contains can't be used with it.
+    target: http://127.0.0.1:8080/healthz
+    method: HEAD
+    interval_seconds: 60
     channels: [ops-slack]
 
 channels:
@@ -93,7 +113,10 @@ channels:
   - name: ops-pagerduty
     type: webhook
     url: https://events.example.com/v2/enqueue
-    # Unlike webhook_url_env / *_env above, header values are literal --
-    # there's no env-var resolution for them yet, so don't put secrets here.
+    # The URL and the header values both accept ${VAR} placeholders, for
+    # receivers that want a token in a header and for the ones that want it
+    # in the path instead. Resolved when the notifier is built, so a missing
+    # variable stops startup rather than one page.
     headers:
       X-Source: alerts
+      X-Api-Key: "${WEBHOOK_API_KEY}"
