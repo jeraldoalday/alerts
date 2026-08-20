@@ -174,3 +174,40 @@ def test_collect_status_rows_ignores_resolved_incidents(db):
 
     with db.session() as session:
         assert collect_status_rows(session)[0].open_incident_since is None
+
+
+def test_the_table_renders_the_p95_column():
+    output = format_status_table([_row(average_latency_ms=484.0, p95_latency_ms=4000.0)], now=NOW)
+
+    assert "484ms" in output
+    assert "4000ms" in output
+
+
+def test_a_row_with_no_p95_renders_a_dash():
+    output = format_status_table([_row(p95_latency_ms=None)], now=NOW)
+
+    assert output.splitlines()[1].split()[5] == "-"
+
+
+def test_collect_status_rows_fills_in_the_p95(db):
+    """The same window the mean is taken over, so the two can't disagree."""
+    with db.session() as session:
+        monitor = _monitor(session, "site")
+        for latency in [90.0] * 19 + [4000.0]:
+            session.add(
+                CheckResult(monitor_id=monitor.id, success=True, latency_ms=latency)
+            )
+
+    with db.session() as session:
+        row = collect_status_rows(session)[0]
+
+    assert row.p95_latency_ms == 90.0
+    assert row.average_latency_ms == 285.5
+
+
+def test_a_monitor_with_no_checks_has_no_p95(db):
+    with db.session() as session:
+        _monitor(session, "site")
+
+    with db.session() as session:
+        assert collect_status_rows(session)[0].p95_latency_ms is None
