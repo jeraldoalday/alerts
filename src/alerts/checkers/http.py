@@ -39,7 +39,11 @@ def _assertion_failure(request: CheckRequest, response: httpx.Response) -> Optio
 
 
 class HttpChecker:
-    """Checks an HTTP(S) endpoint by issuing a GET and asserting on the response.
+    """Checks an HTTP(S) endpoint by issuing a request and asserting on the response.
+
+    The method defaults to GET and the request carries whatever headers the
+    monitor configured, which is what makes a health endpoint behind an API
+    token checkable at all.
 
     The status code is always compared. A request that also carries
     `expected_body_contains` has to find that substring in the response body:
@@ -58,7 +62,12 @@ class HttpChecker:
         timeout_seconds = request.timeout_seconds
         start = time.monotonic()
         try:
-            response = await self._client.get(request.target, timeout=timeout_seconds)
+            response = await self._client.request(
+                request.method,
+                request.target,
+                timeout=timeout_seconds,
+                headers=dict(request.headers),
+            )
         except httpx.TimeoutException:
             return CheckOutcome(success=False, error_message=f"timed out after {timeout_seconds}s")
         except httpx.HTTPError as exc:

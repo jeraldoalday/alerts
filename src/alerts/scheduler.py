@@ -17,6 +17,7 @@ from alerts.checkers.ssl import SslChecker
 from alerts.checkers.tcp import TcpChecker
 from alerts.config import MaintenanceWindowConfig, MonitorConfig
 from alerts.db import Database
+from alerts.envsubst import MissingEnvVar
 from alerts.incidents import sync_incident
 from alerts.maintenance import active_windows
 from alerts.models import (
@@ -186,6 +187,8 @@ def sync_monitors(session, monitor_configs: Iterable[MonitorConfig]) -> None:
                     recovery_threshold=cfg.recovery_threshold,
                     degraded_latency_ms=cfg.degraded_latency_ms,
                     expected_body_contains=cfg.expected_body_contains,
+                    method=cfg.method,
+                    headers=dict(cfg.headers),
                     channels=list(cfg.channels),
                     enabled=True,
                 )
@@ -200,6 +203,8 @@ def sync_monitors(session, monitor_configs: Iterable[MonitorConfig]) -> None:
             monitor.recovery_threshold = cfg.recovery_threshold
             monitor.degraded_latency_ms = cfg.degraded_latency_ms
             monitor.expected_body_contains = cfg.expected_body_contains
+            monitor.method = cfg.method
+            monitor.headers = dict(cfg.headers)
             monitor.channels = list(cfg.channels)
             if monitor.is_paused:
                 _reenable_monitor(monitor)
@@ -289,9 +294,20 @@ class Scheduler:
                 if monitor is None or not monitor.enabled:
                     return
                 checker = self._checkers[monitor.type]
-                request = CheckRequest.from_monitor(monitor)
+                try:
+                    request = CheckRequest.from_monitor(monitor)
+                except MissingEnvVar as exc:
+                    # A header placeholder whose variable has gone missing.
+                    # Recorded as a failed check rather than raised, so the
+                    # reason names the variable instead of appearing as an
+                    # unexplained gap in the history: the operator sees
+                    # "environment variable(s) not set: 'API_TOKEN'" on the
+                    # dashboard, which is the actual fix.
+                    request = None
+                    outcome = CheckOutcome(success=False, error_message=str(exc))
 
-            outcome = await checker.check(request)
+            if request is not None:
+                outcome = await checker.check(request)
 
             with self._database.session() as session:
                 monitor = session.get(Monitor, monitor_id)
