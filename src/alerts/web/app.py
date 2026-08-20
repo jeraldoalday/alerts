@@ -9,14 +9,29 @@ nothing holds the session open across the WSGI response iterator.
 from __future__ import annotations
 
 import json
+from datetime import timedelta
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
-from urllib.parse import unquote
+from urllib.parse import parse_qs, unquote
 
 from alerts.db import Database
+from alerts.models import IncidentState
+from alerts.timeutil import as_utc_naive, utcnow
 from alerts.web import metrics, queries, render
 from alerts.web.stats import UptimeStats, compute_uptime_stats, summarize_states
 
 StartResponse = Callable[[str, List[Tuple[str, str]]], Any]
+
+
+def _incident_duration_seconds(incident, now) -> float:
+    """How long an incident lasted, or has lasted so far.
+
+    An open incident is measured against `now`, which is the only reading
+    that keeps climbing while a service is down. Matches `IncidentRow` in the
+    reporting module so the JSON feed and `alerts incidents` can't disagree
+    about how long an outage has been running.
+    """
+    end = incident.resolved_at if incident.resolved_at is not None else now
+    return (as_utc_naive(end) - as_utc_naive(incident.started_at)).total_seconds()
 
 
 def _percentile_payload(stats: UptimeStats) -> Dict[str, Optional[float]]:
@@ -53,6 +68,46 @@ def _decoded_path(environ: dict) -> str:
         return path.encode("utf-8", errors="replace").decode("utf-8")
 
 
+class BadRequest(Exception):
+    """A query parameter the caller has to fix, reported as a 400."""
+
+
+def _int_param(
+    params: Dict[str, List[str]], name: str, default: int, *, minimum: int, maximum: int
+) -> int:
+    """One integer query parameter, validated rather than coerced.
+
+    Out-of-range and non-numeric values are refused instead of being clamped
+    silently. A caller that asks for `limit=5000` and receives 200 rows has
+    no way to tell that from a database with 200 incidents in it, and would
+    reasonably conclude the other 4800 never happened.
+    """
+    raw = params.get(name)
+    if not raw:
+        return default
+    try:
+        value = int(raw[-1])
+    except ValueError:
+        raise BadRequest(f"{name} must be an integer") from None
+    if not minimum <= value <= maximum:
+        raise BadRequest(f"{name} must be between {minimum} and {maximum}")
+    return value
+
+
+def _flag_param(params: Dict[str, List[str]], name: str) -> bool:
+    """A boolean query parameter, in the spellings a URL actually arrives in.
+
+    Bare `?open` (which parses to an empty value) counts as true, as do the
+    usual affirmative words. Anything else is false rather than an error:
+    the parameter narrows a listing, so misreading one costs a caller some
+    extra rows, not a wrong answer about whether anything is broken.
+    """
+    raw = params.get(name)
+    if raw is None:
+        return False
+    return raw[-1].strip().lower() in ("", "1", "true", "yes", "on")
+
+
 class DashboardApp:
     def __init__(self, database: Database, recent_checks_limit: int = 50):
         self._database = database
@@ -72,10 +127,17 @@ class DashboardApp:
         if method not in ("GET", "HEAD"):
             return self._respond(start_response, "405 Method Not Allowed", b"method not allowed")
 
-        body = self._dispatch(_decoded_path(environ), start_response)
+        try:
+            body = self._dispatch(
+                _decoded_path(environ), environ.get("QUERY_STRING", ""), start_response
+            )
+        except BadRequest as exc:
+            body = self._respond_json(start_response, "400 Bad Request", {"error": str(exc)})
         return [] if method == "HEAD" else body
 
-    def _dispatch(self, path: str, start_response: StartResponse) -> Iterable[bytes]:
+    def _dispatch(
+        self, path: str, query: str, start_response: StartResponse
+    ) -> Iterable[bytes]:
         if path == "/":
             return self._index(start_response)
         if path == "/healthz":
@@ -86,6 +148,8 @@ class DashboardApp:
             return self._api_summary(start_response)
         if path == "/api/monitors":
             return self._api_monitors(start_response)
+        if path == "/api/incidents":
+            return self._api_incidents(start_response, query)
         if path.startswith("/api/monitors/"):
             return self._api_monitor_detail(
                 start_response, unquote(path[len("/api/monitors/") :])
@@ -187,6 +251,66 @@ class DashboardApp:
                     }
                 )
         return self._respond_json(start_response, "200 OK", {"monitors": payload})
+
+    def _api_incidents(self, start_response: StartResponse, query: str) -> Iterable[bytes]:
+        """The estate-wide incident feed, newest first.
+
+        The per-monitor history is already on /api/monitors/<name>; this is
+        the cross-service view a status page or a weekly report is built
+        from, so it takes filters rather than being one fixed listing:
+        `?monitor=`, `?open`, `?days=`, `?limit=`.
+
+        Each incident carries a server-computed `duration_seconds` -- measured
+        against now while it is still open -- so every consumer doesn't
+        reimplement that arithmetic, and none of them has to guess what the
+        server's clock says.
+        """
+        params = parse_qs(query, keep_blank_values=True)
+        limit = _int_param(params, "limit", 50, minimum=1, maximum=500)
+        days = _int_param(params, "days", 7, minimum=0, maximum=3650)
+        open_only = _flag_param(params, "open")
+        monitor_name = params.get("monitor", [None])[-1] or None
+
+        now = utcnow()
+        since = as_utc_naive(now) - timedelta(days=days) if days > 0 else None
+
+        with self._database.session() as session:
+            monitor_id: Optional[int] = None
+            if monitor_name is not None:
+                monitor = queries.get_monitor_by_name(session, monitor_name)
+                if monitor is None:
+                    return self._respond_json(
+                        start_response,
+                        "404 Not Found",
+                        {"error": f"monitor {monitor_name!r} not found"},
+                    )
+                monitor_id = monitor.id
+
+            names = {m.id: m.name for m in queries.list_monitors(session)}
+            incidents = queries.list_incidents(
+                session,
+                monitor_id=monitor_id,
+                since=since,
+                open_only=open_only,
+                limit=limit,
+            )
+            payload = [
+                {
+                    "monitor": names.get(incident.monitor_id),
+                    "state": incident.state.value,
+                    "started_at": incident.started_at.isoformat(),
+                    "resolved_at": (
+                        incident.resolved_at.isoformat() if incident.resolved_at else None
+                    ),
+                    "duration_seconds": _incident_duration_seconds(incident, now),
+                    "cause": incident.cause,
+                }
+                for incident in incidents
+            ]
+        open_count = sum(1 for row in payload if row["state"] == IncidentState.OPEN.value)
+        return self._respond_json(
+            start_response, "200 OK", {"incidents": payload, "open": open_count}
+        )
 
     def _api_summary(self, start_response: StartResponse) -> Iterable[bytes]:
         """Aggregate state counts, for a wallboard or an external alert check.
