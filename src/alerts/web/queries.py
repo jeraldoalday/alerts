@@ -4,6 +4,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import List, Optional, Sequence
 
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from alerts.models import CheckResult, Incident, IncidentState, Monitor
@@ -59,14 +60,25 @@ def list_incidents(
     the cutoff.
 
     An incident is included by when it *started*, not by when it resolved, so
-    a report over the last day shows an outage that began the day before and
-    is still going -- exactly the one worth seeing.
+    a window covers the outages that began in it rather than the ones that
+    happened to end in it.
+
+    Incidents that are still open ignore the window entirely. An outage that
+    began three weeks ago and has not recovered is the single most important
+    row in any report, and dropping it out of a seven-day view because of its
+    start date would answer "nothing has been broken lately" about a service
+    that is broken right now.
     """
     query = session.query(Incident)
     if monitor_id is not None:
         query = query.filter(Incident.monitor_id == monitor_id)
     if since is not None:
-        query = query.filter(Incident.started_at >= as_utc_naive(since))
+        query = query.filter(
+            or_(
+                Incident.started_at >= as_utc_naive(since),
+                Incident.state == IncidentState.OPEN,
+            )
+        )
     if open_only:
         query = query.filter(Incident.state == IncidentState.OPEN)
     return query.order_by(Incident.started_at.desc(), Incident.id.desc()).limit(limit).all()

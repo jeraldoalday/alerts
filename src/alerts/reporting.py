@@ -287,7 +287,8 @@ def collect_incident_rows(
     `monitor` names one service; an unknown name yields no rows rather than
     an error, matching how the dashboard treats a name nothing matches.
     `since_days=None` drops the time window and reports as far back as
-    retention has kept.
+    retention has kept. An incident that is still open is reported whatever
+    the window says -- see `queries.list_incidents`.
     """
     moment = as_utc_naive(now or utcnow())
     monitor_id: Optional[int] = None
