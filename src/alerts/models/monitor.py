@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import enum
 from datetime import datetime
-from typing import TYPE_CHECKING, List, Optional
+from typing import TYPE_CHECKING, Dict, List, Optional
 
 from sqlalchemy import JSON, Boolean, Enum, Float, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -55,6 +55,12 @@ class Monitor(Base):
     # HTTP only: substring the response body must contain. NULL means the
     # status code is the only assertion.
     expected_body_contains: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # HTTP only: the request method, and the headers sent with every check.
+    # Header values are stored exactly as configured, `${VAR}` placeholders
+    # included -- they are expanded per check, so a resolved API token lives
+    # in the checking process and never in this table.
+    method: Mapped[str] = mapped_column(String(10), default="GET", server_default="GET")
+    headers: Mapped[Dict[str, str]] = mapped_column(JSON, default=dict)
     channels: Mapped[List[str]] = mapped_column(JSON, default=list)
     # False once a monitor disappears from the config. The row (and its
     # history) is kept, but the scheduler stops checking it -- see
