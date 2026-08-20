@@ -130,6 +130,29 @@ def _disable_monitor(session, monitor: Monitor) -> None:
         incident.resolved_at = utcnow()
 
 
+def _reenable_monitor(monitor: Monitor) -> None:
+    """Bring a paused monitor back as if it had never been checked.
+
+    Its `state` and streak counters are frozen at whatever they were when the
+    config stopped declaring it, and resuming from those is wrong in both
+    directions. A monitor paused while DOWN comes back DOWN with its old
+    incident already resolved, and `apply_check_outcome` only opens a new
+    incident on the *transition* into DOWN -- so a target that is still
+    broken sits there failing every check with nothing recorded and nobody
+    notified. A monitor paused while UP comes back with a success streak it
+    banked days ago, which is a claim about a target nobody has looked at
+    since.
+
+    Resetting to UNKNOWN costs one `failure_threshold` worth of checks before
+    a real outage is called, which is the same cost a brand new monitor pays
+    and the same evidence it takes to justify paging someone.
+    """
+    monitor.state = MonitorState.UNKNOWN
+    monitor.consecutive_failures = 0
+    monitor.consecutive_successes = 0
+    monitor.consecutive_fast_checks = 0
+
+
 def sync_monitors(session, monitor_configs: Iterable[MonitorConfig]) -> None:
     """Insert/update Monitor rows so they match the configured set.
 
@@ -141,7 +164,9 @@ def sync_monitors(session, monitor_configs: Iterable[MonitorConfig]) -> None:
     and checked (and alerted on) indefinitely.
 
     A monitor that comes back into the config is re-enabled, so removing an
-    entry and putting it back is reversible and keeps the old history.
+    entry and putting it back is reversible and keeps the old history. Its
+    runtime state is reset on the way back in -- see `_reenable_monitor` --
+    because the history is worth keeping while a frozen state is not.
     """
     existing = {m.name: m for m in session.query(Monitor).all()}
     configured = set()
@@ -176,6 +201,8 @@ def sync_monitors(session, monitor_configs: Iterable[MonitorConfig]) -> None:
             monitor.degraded_latency_ms = cfg.degraded_latency_ms
             monitor.expected_body_contains = cfg.expected_body_contains
             monitor.channels = list(cfg.channels)
+            if monitor.is_paused:
+                _reenable_monitor(monitor)
             monitor.enabled = True
 
     for name, monitor in existing.items():
