@@ -506,17 +506,21 @@ def format_probe_table(rows: Sequence[ProbeRow]) -> str:
 def format_probe_summary(rows: Sequence[ProbeRow]) -> str:
     """One-line tally of how a probe run went.
 
-    Slow checks are counted separately from passing ones rather than folded
-    in. They passed, so calling them failures would be wrong, but a run where
-    everything is a millisecond under its budget is not the clean bill of
-    health "3 ok" would suggest.
+    Slow checks are counted on their own rather than folded into either
+    neighbour. They passed, so calling them failures would be wrong, but a
+    run where everything came back a millisecond under its budget is not the
+    clean bill of health a bare "3 ok" claims.
+
+    The three counts partition the row set, so they add up to the total. A
+    reader who has to work out whether "2 ok, 1 slow" out of 3 means one of
+    the two was also the slow one is being given arithmetic, not a summary.
     """
     if not rows:
         return "0 monitor(s) checked"
 
     failed = sum(1 for row in rows if row.failed)
     slow = sum(1 for row in rows if row.result == _PROBE_SLOW)
-    parts = [f"{len(rows)} monitor(s) checked", f"{len(rows) - failed} ok"]
+    parts = [f"{len(rows)} monitor(s) checked", f"{len(rows) - failed - slow} ok"]
     if slow:
         parts.append(f"{slow} slow")
     parts.append(f"{failed} failed")

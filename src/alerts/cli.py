@@ -1,4 +1,4 @@
-"""Command-line entrypoint: `alerts run|serve|status|incidents|maintenance|prune`."""
+"""Command-line entrypoint: `alerts run|serve|check|status|incidents|maintenance|prune`."""
 from __future__ import annotations
 
 import argparse
@@ -10,14 +10,18 @@ from typing import Callable, List, Optional
 from alerts.config import load_config
 from alerts.db import Database
 from alerts.notifiers.registry import build_notifiers
+from alerts.probe import probe_monitors, select_monitors
 from alerts.reporting import (
     collect_incident_rows,
     collect_maintenance_rows,
+    collect_probe_rows,
     collect_status_rows,
     format_incident_summary,
     format_incident_table,
     format_maintenance_summary,
     format_maintenance_table,
+    format_probe_summary,
+    format_probe_table,
     format_status_summary,
     format_status_table,
 )
@@ -77,6 +81,17 @@ def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
 
     serve_parser = subparsers.add_parser("serve", help="Run the read-only web dashboard.")
     serve_parser.add_argument("--config", default="config.yaml", help="Path to config.yaml")
+
+    check_parser = subparsers.add_parser(
+        "check", help="Check every configured target once and print what came back."
+    )
+    check_parser.add_argument("--config", default="config.yaml", help="Path to config.yaml")
+    check_parser.add_argument("--monitor", help="Only check this monitor.")
+    check_parser.add_argument(
+        "--exit-code",
+        action="store_true",
+        help="Exit 1 if any check failed, for gating a deploy or a config change.",
+    )
 
     status_parser = subparsers.add_parser(
         "status", help="Print the current state of every monitor and exit."
@@ -176,6 +191,42 @@ def _serve(config_path: str) -> None:
     database = Database(config.database.url)
     database.create_all()
     serve(database, config.dashboard.host, config.dashboard.port)
+
+
+def _check(config_path: str, monitor: Optional[str], use_exit_code: bool) -> int:
+    """Probe the configured targets once and print what came back.
+
+    The only subcommand that opens no database at all. It runs the checks the
+    scheduler would run, against the config as written, and reports what
+    happened -- without recording a result, moving a monitor's state, opening
+    an incident, or notifying anyone. That is what makes it safe to run
+    against a live install, repeatedly, from a laptop, while `alerts run` is
+    running somewhere else.
+
+    Loading the config is itself half the check: an unknown channel
+    reference, a body assertion on a HEAD request, or a `${VAR}` naming a
+    variable that isn't set all fail here, before a single request goes out.
+    """
+    config = load_config(config_path)
+    monitors = select_monitors(config.monitors, monitor=monitor)
+    if monitor is not None and not monitors:
+        # Reported rather than rendered as an empty table, and failed under
+        # --exit-code: the flag is there to gate a deploy on a service being
+        # healthy, and a typo in the name passing silently is the one way it
+        # could fail that nobody would notice.
+        print(f"No monitor named {monitor!r} in {config_path}.")
+        return 1 if use_exit_code else 0
+
+    results = asyncio.run(
+        probe_monitors(monitors, max_concurrent=config.scheduler.max_concurrent_checks)
+    )
+    rows = collect_probe_rows(results)
+
+    print(format_probe_table(rows))
+    print()
+    print(format_probe_summary(rows))
+
+    return 1 if use_exit_code and any(row.failed for row in rows) else 0
 
 
 def _status(config_path: str, checks_window: int, use_exit_code: bool) -> int:
@@ -294,6 +345,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             pass
     elif args.command == "serve":
         _serve(args.config)
+    elif args.command == "check":
+        return _check(args.config, monitor=args.monitor, use_exit_code=args.exit_code)
     elif args.command == "status":
         return _status(args.config, checks_window=args.checks, use_exit_code=args.exit_code)
     elif args.command == "incidents":
