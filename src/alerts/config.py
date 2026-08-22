@@ -146,6 +146,26 @@ class MaintenanceWindowConfig(BaseModel):
         return not self.monitors or monitor_name in self.monitors
 
 
+# Characters a tag may not contain. A comma is out because tags are rendered
+# as a comma-joined list in the status table and read back as one from the
+# command line, so a tag containing one would split into two nobody
+# declared. Whitespace is out because a tag is picked out of a list by eye,
+# and " prod" and "prod" are indistinguishable there and different
+# everywhere else.
+_TAG_FORBIDDEN = (",", " ", "\t", "\n")
+
+
+def normalise_tag(value: str) -> str:
+    """Fold a tag to the one spelling everything else compares against.
+
+    Lowercased and stripped, so `Prod`, `prod`, and ` prod ` are the same
+    tag. Case-sensitive tags would mean a monitor tagged `Prod` silently
+    missing from `--tag prod`, which is the failure mode where an operator
+    concludes a service is fine because they never saw it.
+    """
+    return value.strip().lower()
+
+
 # The HTTP methods a monitor may use. All of them are request methods with
 # no body: there is nowhere in a monitor's config to put one, and a POST
 # with an empty body is a different request from the one the operator
@@ -173,6 +193,11 @@ class MonitorConfig(BaseModel):
     method: str = "GET"
     headers: Dict[str, str] = Field(default_factory=dict)
     channels: List[str] = Field(default_factory=list)
+    # Free-form labels for grouping: `prod`, `payments`, `eu-west-1`. They
+    # carry no behaviour of their own -- nothing schedules, alerts, or
+    # escalates differently because of a tag -- they exist so a report can be
+    # narrowed to the part of the estate someone is responsible for.
+    tags: List[str] = Field(default_factory=list)
 
     @field_validator("method")
     @classmethod
@@ -182,6 +207,29 @@ class MonitorConfig(BaseModel):
             raise ValueError(
                 f"unsupported HTTP method {value!r}, expected one of {list(HTTP_METHODS)}"
             )
+        return normalised
+
+    @field_validator("tags")
+    @classmethod
+    def tags_are_normalised_and_unique(cls, tags: List[str]) -> List[str]:
+        """Normalise, validate, and de-duplicate a monitor's tags.
+
+        De-duplication preserves declaration order rather than sorting: the
+        order is how the operator grouped them in their head, and the status
+        table shows them in it.
+        """
+        normalised: List[str] = []
+        for raw in tags:
+            tag = normalise_tag(raw)
+            if not tag:
+                raise ValueError("tags must not be blank")
+            bad = [character for character in _TAG_FORBIDDEN if character in tag]
+            if bad:
+                raise ValueError(
+                    f"tag {raw!r} contains {bad!r}; tags may not contain commas or whitespace"
+                )
+            if tag not in normalised:
+                normalised.append(tag)
         return normalised
 
     @field_validator("headers")
@@ -401,6 +449,25 @@ class AppConfig(BaseModel):
 
     def channel_names(self) -> set:
         return {c.name for c in self.channels}
+
+    def tags(self) -> List[str]:
+        """Every tag any monitor declares, sorted, without repeats.
+
+        Sorted here rather than in declaration order: across the whole config
+        there is no one order to preserve, and this is what a `--tag` typo
+        gets reported against.
+        """
+        found = {tag for monitor in self.monitors for tag in monitor.tags}
+        return sorted(found)
+
+    def monitors_tagged(self, tag: str) -> List[MonitorConfig]:
+        """Every monitor carrying a tag, in config order.
+
+        The tag is normalised on the way in, so a `--tag Prod` typed at a
+        terminal matches a monitor that declared `prod`.
+        """
+        wanted = normalise_tag(tag)
+        return [monitor for monitor in self.monitors if wanted in monitor.tags]
 
     def validate_monitor_channel_refs(self) -> None:
         known = self.channel_names()
