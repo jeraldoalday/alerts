@@ -7,7 +7,8 @@ resolves back to a name.
 """
 import threading
 import urllib.request
-from urllib.parse import unquote
+from html import escape
+from urllib.parse import quote, unquote
 from wsgiref.simple_server import make_server
 
 import pytest
@@ -131,6 +132,57 @@ def test_non_ascii_monitor_link_round_trips_through_a_real_server(tmp_path):
         detail = urllib.request.urlopen(f"http://127.0.0.1:{port}{href}")
         assert detail.status == 200
         assert "café-api" in detail.read().decode("utf-8")
+    finally:
+        httpd.shutdown()
+        thread.join(timeout=5)
+        httpd.server_close()
+
+
+@pytest.mark.parametrize("name", ["cache%2Fhit", "api%20v2", "100%-uptime"])
+def test_a_percent_sign_in_a_name_is_not_decoded_twice(db, name):
+    """The escapes in a name are the name's, not the URL's.
+
+    A path arrives already decoded once, by the server. Decoding it again
+    turns `%2F` -- three literal characters of a monitor's name -- into a
+    slash, and the lookup fails on a monitor that exists.
+    """
+    _add_monitor(db, name)
+
+    status, body = _get(DashboardApp(db), f"/monitors/{quote(name, safe='')}")
+
+    assert status == "200 OK"
+    assert escape(name) in body
+
+
+def test_api_detail_does_not_decode_a_percent_sign_twice(db):
+    _add_monitor(db, "cache%2Fhit")
+
+    status, body = _get(DashboardApp(db), "/api/monitors/cache%252Fhit")
+
+    assert status == "200 OK"
+    assert '"name": "cache%2Fhit"' in body
+
+
+def test_a_percent_encoded_name_round_trips_through_a_real_server(tmp_path):
+    """End to end, on the name that used to break: link out, resolve back."""
+    from alerts.db import Database
+
+    database = Database(f"sqlite:///{tmp_path / 'dashboard.db'}")
+    database.create_all()
+    _add_monitor(database, "cache%2Fhit")
+
+    httpd = make_server("127.0.0.1", 0, DashboardApp(database))
+    port = httpd.server_address[1]
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        index = urllib.request.urlopen(f"http://127.0.0.1:{port}/").read().decode("utf-8")
+        href = index.split('href="')[1].split('"')[0]
+        assert href == "/monitors/cache%252Fhit"
+
+        detail = urllib.request.urlopen(f"http://127.0.0.1:{port}{href}")
+        assert detail.status == 200
+        assert "cache%2Fhit" in detail.read().decode("utf-8")
     finally:
         httpd.shutdown()
         thread.join(timeout=5)
