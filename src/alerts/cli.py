@@ -5,7 +5,7 @@ import argparse
 import asyncio
 import logging
 import sys
-from typing import List, Optional
+from typing import Callable, List, Optional
 
 from alerts.config import load_config
 from alerts.db import Database
@@ -27,6 +27,46 @@ from alerts.web.server import serve
 
 logger = logging.getLogger(__name__)
 
+# Upper bounds for the numeric options, matching the ones `/api/incidents`
+# enforces on the same figures so the two front ends can't disagree about
+# what a valid request is. They are generous rather than tight: the point is
+# to catch a number that means something other than what was typed, not to
+# ration rows.
+MAX_CHECKS_WINDOW = 10_000
+MAX_INCIDENT_LIMIT = 500
+MAX_REPORT_DAYS = 3650
+
+
+def _bounded_int(minimum: int, maximum: int) -> Callable[[str], int]:
+    """An argparse `type` that refuses a number outside its useful range.
+
+    Every numeric option here ends up as a `LIMIT` or a date arithmetic
+    operand, and both fail quietly rather than loudly when handed something
+    they can't use. `--checks 0` limits the uptime window to nothing and
+    reports a monitor checked seconds ago as never checked; `--checks -1`
+    becomes `LIMIT -1`, which SQLite reads as no limit at all, so the window
+    the operator asked to narrow silently covers the whole retained history.
+    A negative `--days` puts the cutoff in the future.
+
+    None of those are answers an operator could tell apart from the truth,
+    which is the same reason the dashboard's `/api/incidents` validates its
+    query parameters instead of clamping them. Refusing at parse time makes
+    argparse print the range and exit 2 before any database is opened.
+    """
+
+    def parse(raw: str) -> int:
+        try:
+            value = int(raw)
+        except ValueError:
+            raise argparse.ArgumentTypeError(f"{raw!r} is not an integer") from None
+        if not minimum <= value <= maximum:
+            raise argparse.ArgumentTypeError(
+                f"{value} is out of range, expected {minimum} to {maximum}"
+            )
+        return value
+
+    return parse
+
 
 def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="alerts")
@@ -44,7 +84,7 @@ def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     status_parser.add_argument("--config", default="config.yaml", help="Path to config.yaml")
     status_parser.add_argument(
         "--checks",
-        type=int,
+        type=_bounded_int(1, MAX_CHECKS_WINDOW),
         default=50,
         help="How many recent checks per monitor the uptime figure covers (default: 50).",
     )
@@ -61,13 +101,13 @@ def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     incidents_parser.add_argument("--monitor", help="Only incidents for this monitor.")
     incidents_parser.add_argument(
         "--days",
-        type=int,
+        type=_bounded_int(0, MAX_REPORT_DAYS),
         default=7,
         help="How far back to report (default: 7). 0 reports everything still kept.",
     )
     incidents_parser.add_argument(
         "--limit",
-        type=int,
+        type=_bounded_int(1, MAX_INCIDENT_LIMIT),
         default=50,
         help="Most incidents to list (default: 50). The summary covers the listed ones.",
     )
