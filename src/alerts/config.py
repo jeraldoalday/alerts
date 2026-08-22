@@ -18,6 +18,8 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from alerts.envsubst import expand as expand_env
 from alerts.envsubst import expand_mapping as expand_env_mapping
 from alerts.envsubst import missing as missing_env_vars
+from alerts.tags import forbidden_characters, normalise_all
+from alerts.tags import normalise as normalise_tag
 
 
 class DatabaseConfig(BaseModel):
@@ -146,26 +148,6 @@ class MaintenanceWindowConfig(BaseModel):
         return not self.monitors or monitor_name in self.monitors
 
 
-# Characters a tag may not contain. A comma is out because tags are rendered
-# as a comma-joined list in the status table and read back as one from the
-# command line, so a tag containing one would split into two nobody
-# declared. Whitespace is out because a tag is picked out of a list by eye,
-# and " prod" and "prod" are indistinguishable there and different
-# everywhere else.
-_TAG_FORBIDDEN = (",", " ", "\t", "\n")
-
-
-def normalise_tag(value: str) -> str:
-    """Fold a tag to the one spelling everything else compares against.
-
-    Lowercased and stripped, so `Prod`, `prod`, and ` prod ` are the same
-    tag. Case-sensitive tags would mean a monitor tagged `Prod` silently
-    missing from `--tag prod`, which is the failure mode where an operator
-    concludes a service is fine because they never saw it.
-    """
-    return value.strip().lower()
-
-
 # The HTTP methods a monitor may use. All of them are request methods with
 # no body: there is nowhere in a monitor's config to put one, and a POST
 # with an empty body is a different request from the one the operator
@@ -218,19 +200,16 @@ class MonitorConfig(BaseModel):
         order is how the operator grouped them in their head, and the status
         table shows them in it.
         """
-        normalised: List[str] = []
         for raw in tags:
             tag = normalise_tag(raw)
             if not tag:
                 raise ValueError("tags must not be blank")
-            bad = [character for character in _TAG_FORBIDDEN if character in tag]
+            bad = forbidden_characters(tag)
             if bad:
                 raise ValueError(
                     f"tag {raw!r} contains {bad!r}; tags may not contain commas or whitespace"
                 )
-            if tag not in normalised:
-                normalised.append(tag)
-        return normalised
+        return normalise_all(tags)
 
     @field_validator("headers")
     @classmethod

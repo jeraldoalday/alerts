@@ -8,6 +8,7 @@ from sqlalchemy import JSON, Boolean, Enum, Float, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from alerts.models.base import Base
+from alerts.tags import normalise as normalise_tag
 from alerts.timeutil import utcnow
 
 if TYPE_CHECKING:
@@ -103,7 +104,7 @@ class Monitor(Base):
         folding -- which is what makes a `?tag=Prod` in a URL or a `--tag
         Prod` at a terminal match what the config declared.
         """
-        return tag.strip().lower() in (self.tags or [])
+        return normalise_tag(tag) in (self.tags or [])
 
     @property
     def is_paused(self) -> bool:

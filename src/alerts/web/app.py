@@ -15,6 +15,7 @@ from urllib.parse import parse_qs
 
 from alerts.db import Database
 from alerts.models import IncidentState
+from alerts.tags import normalise as normalise_tag
 from alerts.timeutil import as_utc_naive, utcnow
 from alerts.web import metrics, queries, render
 from alerts.web.stats import UptimeStats, compute_uptime_stats, summarize_states
@@ -114,11 +115,17 @@ def _tag_param(params: Dict[str, List[str]], name: str = "tag") -> Optional[str]
     A blank `?tag=` is treated as absent rather than as a tag nobody has:
     it is what a form submitted with the filter cleared sends, and answering
     that with an empty listing would be a strange way to say "all".
+
+    Folded here, at the boundary, so everything downstream sees one spelling.
+    The row filter would have folded it anyway, but the page around the rows
+    would not: `?tag=PROD` used to list the right monitors under a heading
+    reading "Monitors: PROD" with no tag link marked as current, because the
+    raw parameter never matched the stored `prod` it had just selected on.
     """
     raw = params.get(name)
     if not raw:
         return None
-    return raw[-1].strip() or None
+    return normalise_tag(raw[-1]) or None
 
 
 class DashboardApp:

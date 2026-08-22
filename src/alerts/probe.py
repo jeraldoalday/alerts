@@ -26,10 +26,11 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional, Sequence
 
 from alerts.checkers.base import Checker, CheckOutcome, CheckRequest
-from alerts.config import MonitorConfig, normalise_tag
+from alerts.config import MonitorConfig
 from alerts.envsubst import MissingEnvVar
 from alerts.models import MonitorType
 from alerts.scheduler import default_checkers
+from alerts.tags import normalise as normalise_tag
 
 
 @dataclass(frozen=True)

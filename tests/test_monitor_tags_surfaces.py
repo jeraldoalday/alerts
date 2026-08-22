@@ -441,3 +441,60 @@ def test_the_other_series_are_unchanged_in_shape(db):
         line for line in body.splitlines() if line.startswith("alerts_monitor_state{")
     ][0]
     assert "tag=" not in state_line
+
+
+# --- one folding rule ---------------------------------------------------
+
+
+@pytest.mark.parametrize("asked", ["PROD", "prod", " Prod "])
+def test_a_query_parameter_is_folded_before_the_page_is_built(db, asked):
+    """The rows and the page around them have to agree on the tag.
+
+    `?tag=PROD` used to list the right monitors under a heading reading
+    "Monitors: PROD" with no tag link marked current: the row filter folded
+    the parameter, everything else compared it raw.
+    """
+    with db.session() as session:
+        _monitor(session, "api", ["prod"])
+
+    _, body = _call(DashboardApp(db), "/", f"tag={asked.strip()}")
+
+    assert "api" in body
+    assert "Monitors: prod" in body
+    assert '<a class="tag current" href="/?tag=prod">prod</a>' in body
+
+
+def test_the_api_echoes_the_tag_it_actually_filtered_on(db):
+    with db.session() as session:
+        _monitor(session, "api", ["prod"])
+
+    _, body = _call(DashboardApp(db), "/api/monitors", "tag=PROD")
+
+    assert json.loads(body)["tag"] == "prod"
+
+
+def test_every_boundary_folds_a_tag_the_same_way():
+    """The config validator, the model, and the dashboard share one rule."""
+    from alerts import tags as tag_rules
+
+    raw = " PROD "
+    assert tag_rules.normalise(raw) == "prod"
+    assert MonitorConfig(
+        name="api", type="http", target="https://example.com", tags=[raw]
+    ).tags == ["prod"]
+    assert Monitor(
+        name="api", type=MonitorType.HTTP, target="https://example.com", tags=["prod"]
+    ).has_tag(raw)
+
+
+def test_normalise_all_drops_repeats_and_keeps_order():
+    from alerts import tags as tag_rules
+
+    assert tag_rules.normalise_all(["Prod", "web", "PROD"]) == ["prod", "web"]
+
+
+def test_forbidden_characters_names_what_is_wrong():
+    from alerts import tags as tag_rules
+
+    assert tag_rules.forbidden_characters("a,b") == [","]
+    assert tag_rules.forbidden_characters("ok") == []
