@@ -249,3 +249,40 @@ def test_main_status_on_an_empty_database(tmp_path, capsys):
 
     assert cli.main(["status", "--config", config_path, "--exit-code"]) == 0
     assert "No monitors configured." in capsys.readouterr().out
+
+
+def test_logging_setup_quiets_httpxs_per_request_lines():
+    """One line per check per interval, forever, buries everything worth reading."""
+    import logging
+
+    cli._configure_logging()
+
+    assert logging.getLogger("httpx").level == logging.WARNING
+    assert logging.getLogger("httpcore").level == logging.WARNING
+
+
+def test_logging_setup_leaves_the_projects_own_loggers_alone():
+    """Only the transport is quieted; nothing sets a level on our own loggers.
+
+    Asserted as "no level of its own" rather than as an effective level,
+    which under pytest's logging plugin is whatever the plugin configured
+    the root to rather than what this function did.
+    """
+    import logging
+
+    cli._configure_logging()
+
+    for name in ("alerts", "alerts.scheduler", "alerts.cli"):
+        assert logging.getLogger(name).level == logging.NOTSET
+
+
+def test_a_transport_warning_still_gets_through(caplog):
+    """Lowered, not silenced -- a warning from the transport is worth seeing."""
+    import logging
+
+    cli._configure_logging()
+
+    with caplog.at_level(logging.WARNING, logger="httpx"):
+        logging.getLogger("httpx").warning("connection pool exhausted")
+
+    assert "connection pool exhausted" in caplog.text

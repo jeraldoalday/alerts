@@ -330,13 +330,34 @@ def _prune(config_path: str, dry_run: bool) -> None:
     logger.info("%s %s", "would prune" if dry_run else "pruned", summary.describe())
 
 
+def _configure_logging() -> None:
+    """Set up logging for a command-line run.
+
+    httpx logs a line per request at INFO, which is the wrong level for this
+    process: a request is not an event here, it is the unit of work. Left
+    alone, `alerts run` writes a line per monitor per interval forever -- a
+    hundred thousand lines a day for a modest estate, burying the transitions
+    and notification failures that are the only things worth reading -- and
+    `alerts check` interleaves them with the table it is printing.
+
+    Lowered rather than silenced: a warning from the transport is still worth
+    seeing, and the checkers already report the failures that matter as check
+    outcomes, with the target named.
+    """
+    logging.basicConfig(
+        level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
+    )
+    for noisy in ("httpx", "httpcore"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     """Dispatch a subcommand, returning the process exit code.
 
     setuptools' console-script wrapper calls `sys.exit(main())`, so the
     return value is what `alerts status --exit-code` reports to the shell.
     """
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    _configure_logging()
     args = _parse_args(argv)
     if args.command == "run":
         try:
