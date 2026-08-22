@@ -1,8 +1,14 @@
-"""Plain-text status reporting for `alerts status`.
+"""Plain-text tables for the reporting subcommands.
 
-The dashboard already answers "what's the state of everything right now",
-but it needs a running process and a browser. This renders the same picture
-to stdout so it works over SSH, in a cron mail, or as a scripted check.
+One module per table would be four modules that all render aligned columns
+the same way, so they live together: `alerts status` (what is the state of
+everything now), `alerts incidents` (what has been breaking), `alerts
+maintenance` (what is planned), and `alerts check` (what does this config
+actually do right now).
+
+The dashboard answers the first of those too, but it needs a running process
+and a browser. These render the same pictures to stdout so they work over
+SSH, in a cron mail, or as a scripted check.
 
 Table rendering is done by hand rather than pulled in from a dependency: the
 project's dependency list is deliberately short, and column alignment over a
@@ -19,6 +25,7 @@ from sqlalchemy.orm import Session
 from alerts.config import MaintenanceWindowConfig
 from alerts.maintenance import active_occurrence, describe_schedule, next_occurrence
 from alerts.models import Incident, IncidentState, MonitorState
+from alerts.probe import ProbeResult
 from alerts.timeutil import as_utc_naive, utcnow
 from alerts.web import queries
 from alerts.web.stats import compute_uptime_stats
@@ -26,11 +33,19 @@ from alerts.web.stats import compute_uptime_stats
 _COLUMNS = ("MONITOR", "TYPE", "STATE", "UPTIME", "LATENCY", "P95", "LAST CHECK", "NOTE")
 _MAINTENANCE_COLUMNS = ("WINDOW", "SCHEDULE", "MONITORS", "STATUS")
 _INCIDENT_COLUMNS = ("MONITOR", "STARTED", "DURATION", "STATE", "CAUSE")
+_PROBE_COLUMNS = ("MONITOR", "TYPE", "TARGET", "RESULT", "LATENCY", "DETAIL")
 
 # A cause is a checker's error message, which can run to a whole TLS
 # handshake failure. Truncated so one long message doesn't push the other
 # columns off an 80-column terminal; the full text is on the dashboard.
 _CAUSE_WIDTH = 44
+
+# A probe's target is a whole URL and its detail is a checker message, so
+# both get their own budget. Wider than _CAUSE_WIDTH because `alerts check`
+# is run interactively, where a wrapped line costs less than a truncated URL
+# that can't be told apart from a different one with the same prefix.
+_TARGET_WIDTH = 48
+_DETAIL_WIDTH = 60
 
 
 @dataclass(frozen=True)
@@ -410,3 +425,99 @@ def format_status_summary(rows: Sequence[StatusRow]) -> str:
         parts.append(f"{paused} paused")
     tally = ", ".join(parts)
     return f"{len(rows)} monitor(s): {tally}" if tally else f"{len(rows)} monitor(s)"
+
+
+# The three outcomes a probe reports, spelled so they sort visually: a
+# failure is the only one in capitals, because it is the only one anyone
+# scanning a long table needs to find.
+_PROBE_OK = "ok"
+_PROBE_SLOW = "slow"
+_PROBE_FAIL = "FAIL"
+
+
+@dataclass(frozen=True)
+class ProbeRow:
+    """One monitor's line in the `alerts check` table."""
+
+    name: str
+    type: str
+    target: str
+    result: str
+    latency_ms: Optional[float]
+    detail: str
+
+    @property
+    def failed(self) -> bool:
+        return self.result == _PROBE_FAIL
+
+
+def collect_probe_rows(results: Sequence[ProbeResult]) -> List[ProbeRow]:
+    """Build one row per probed monitor, in the order they were probed."""
+    rows: List[ProbeRow] = []
+    for result in results:
+        if not result.passed:
+            outcome = _PROBE_FAIL
+        elif result.is_slow:
+            outcome = _PROBE_SLOW
+        else:
+            outcome = _PROBE_OK
+        rows.append(
+            ProbeRow(
+                name=result.name,
+                type=result.type,
+                target=result.target,
+                result=outcome,
+                latency_ms=result.outcome.latency_ms,
+                detail=result.detail,
+            )
+        )
+    return rows
+
+
+def _probe_cells(row: ProbeRow) -> List[str]:
+    return [
+        row.name,
+        row.type,
+        _truncate(row.target, _TARGET_WIDTH),
+        row.result,
+        _latency(row.latency_ms),
+        _truncate(row.detail, _DETAIL_WIDTH),
+    ]
+
+
+def format_probe_table(rows: Sequence[ProbeRow]) -> str:
+    """Render probe results as an aligned plain-text table.
+
+    The target is shown, unlike in the status table, because this command is
+    usually run against a config being edited: knowing that `api-gateway`
+    failed matters much less than seeing which URL it actually asked.
+    """
+    if not rows:
+        return "No monitors to check."
+
+    table = [list(_PROBE_COLUMNS)] + [_probe_cells(row) for row in rows]
+    widths = [max(len(line[column]) for line in table) for column in range(len(_PROBE_COLUMNS))]
+    return "\n".join(
+        "  ".join(cell.ljust(width) for cell, width in zip(line, widths)).rstrip()
+        for line in table
+    )
+
+
+def format_probe_summary(rows: Sequence[ProbeRow]) -> str:
+    """One-line tally of how a probe run went.
+
+    Slow checks are counted separately from passing ones rather than folded
+    in. They passed, so calling them failures would be wrong, but a run where
+    everything is a millisecond under its budget is not the clean bill of
+    health "3 ok" would suggest.
+    """
+    if not rows:
+        return "0 monitor(s) checked"
+
+    failed = sum(1 for row in rows if row.failed)
+    slow = sum(1 for row in rows if row.result == _PROBE_SLOW)
+    parts = [f"{len(rows)} monitor(s) checked", f"{len(rows) - failed} ok"]
+    if slow:
+        parts.append(f"{slow} slow")
+    parts.append(f"{failed} failed")
+    return ", ".join(parts)
