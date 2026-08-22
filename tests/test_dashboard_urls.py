@@ -7,6 +7,7 @@ resolves back to a name.
 """
 import threading
 import urllib.request
+from urllib.parse import unquote
 from wsgiref.simple_server import make_server
 
 import pytest
@@ -21,10 +22,25 @@ def _add_monitor(db, name: str) -> None:
         session.add(Monitor(name=name, type=MonitorType.HTTP, target="https://example.com"))
 
 
-def _get(app, path: str):
+def _get(app, url_path: str):
+    """Call the app with the PATH_INFO a real WSGI server would hand it.
+
+    `wsgiref` percent-decodes the request target as latin-1 before putting it
+    in the environ, so a test that passes an encoded path straight through is
+    exercising a request no server ever makes -- and would have hidden the
+    double-decoding the app used to do on top of it.
+    """
+    status = []
+    environ = {"REQUEST_METHOD": "GET", "PATH_INFO": unquote(url_path, "iso-8859-1")}
+    body = b"".join(app(environ, lambda s, h: status.append(s)))
+    return status[0], body.decode("utf-8")
+
+
+def _get_raw(app, path_info: str):
+    """Call the app with PATH_INFO verbatim, for paths no encoder produced."""
     status = []
     body = b"".join(
-        app({"REQUEST_METHOD": "GET", "PATH_INFO": path}, lambda s, h: status.append(s))
+        app({"REQUEST_METHOD": "GET", "PATH_INFO": path_info}, lambda s, h: status.append(s))
     )
     return status[0], body.decode("utf-8")
 
@@ -82,13 +98,15 @@ def test_latin1_transported_path_is_decoded_as_utf8(db):
     """wsgiref hands over PATH_INFO as bytes-in-a-str, per PEP 3333."""
     _add_monitor(db, "café-api")
 
-    status, _ = _get(DashboardApp(db), "/monitors/café-api".encode("utf-8").decode("latin-1"))
+    status, _ = _get_raw(
+        DashboardApp(db), "/monitors/café-api".encode("utf-8").decode("latin-1")
+    )
 
     assert status == "200 OK"
 
 
 def test_undecodable_path_404s_instead_of_raising(db):
-    status, _ = _get(DashboardApp(db), "/monitors/\udcff")
+    status, _ = _get_raw(DashboardApp(db), "/monitors/\udcff")
 
     assert status == "404 Not Found"
 

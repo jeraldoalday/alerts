@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 from datetime import timedelta
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
-from urllib.parse import parse_qs, unquote
+from urllib.parse import parse_qs
 
 from alerts.db import Database
 from alerts.models import IncidentState
@@ -138,6 +138,15 @@ class DashboardApp:
     def _dispatch(
         self, path: str, query: str, start_response: StartResponse
     ) -> Iterable[bytes]:
+        """Route an already-decoded path to a handler.
+
+        `path` has been through percent-decoding exactly once, by the WSGI
+        server, so the trailing segment of a `/monitors/<name>` route is the
+        monitor name as configured. Decoding it a second time here -- as this
+        used to -- reads the escapes in a name that legitimately contains a
+        "%" as if they were the URL's own, so the dashboard's own link to a
+        monitor called `cache%2Fhit` resolved to `cache/hit` and 404'd.
+        """
         if path == "/":
             return self._index(start_response)
         if path == "/healthz":
@@ -151,11 +160,9 @@ class DashboardApp:
         if path == "/api/incidents":
             return self._api_incidents(start_response, query)
         if path.startswith("/api/monitors/"):
-            return self._api_monitor_detail(
-                start_response, unquote(path[len("/api/monitors/") :])
-            )
+            return self._api_monitor_detail(start_response, path[len("/api/monitors/") :])
         if path.startswith("/monitors/"):
-            return self._monitor_detail(start_response, unquote(path[len("/monitors/") :]))
+            return self._monitor_detail(start_response, path[len("/monitors/") :])
         return self._not_found(start_response)
 
     def _index(self, start_response: StartResponse) -> Iterable[bytes]:
