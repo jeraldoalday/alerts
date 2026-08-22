@@ -11,8 +11,32 @@ from alerts.models import CheckResult, Incident, IncidentState, Monitor
 from alerts.timeutil import as_utc_naive
 
 
-def list_monitors(session: Session) -> Sequence[Monitor]:
-    return session.query(Monitor).order_by(Monitor.name).all()
+def list_monitors(session: Session, *, tag: Optional[str] = None) -> Sequence[Monitor]:
+    """Every monitor by name, optionally narrowed to one tag.
+
+    The tag filter is applied in Python rather than in SQL. Tags live in a
+    JSON column, and the containment operators for those differ by backend
+    (and don't exist at all on older SQLite builds), so pushing the filter
+    down would trade a portable query for one that fails on some installs.
+    The cost is reading rows that are then discarded, over a table that holds
+    one row per monitored service -- tens of them, not millions.
+    """
+    monitors = session.query(Monitor).order_by(Monitor.name).all()
+    if tag is None:
+        return monitors
+    return [monitor for monitor in monitors if monitor.has_tag(tag)]
+
+
+def known_tags(session: Session) -> List[str]:
+    """Every tag any monitor carries, sorted, without repeats.
+
+    Read from the monitors table rather than from the config so it covers
+    paused monitors too: a tag that only survives on a monitor the config no
+    longer declares still appears on the dashboard, and offering a filter
+    that silently matches nothing would be worse than listing it.
+    """
+    found = {tag for monitor in session.query(Monitor).all() for tag in monitor.tags or []}
+    return sorted(found)
 
 
 def get_monitor_by_name(session: Session, name: str) -> Optional[Monitor]:
