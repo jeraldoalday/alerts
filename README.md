@@ -28,6 +28,8 @@ Early development. Current state:
 - [x] Latency percentiles (p50/p95/p99) everywhere latency is reported
 - [x] Request method and headers for HTTP monitors, with `${VAR}` secrets
 - [x] `alerts incidents` and `/api/incidents` for incident history and MTTR
+- [x] `alerts check` for probing the configured targets on demand
+- [x] Tags for grouping monitors, and filtering every report by one
 
 See open issues and commit history for day-to-day progress.
 
@@ -55,6 +57,47 @@ Run the checker scheduler:
 alerts run --config config.yaml
 ```
 
+Check every configured target once, right now, and print what came back:
+
+```bash
+alerts check --config config.yaml
+```
+
+```
+MONITOR           TYPE  TARGET                           RESULT  LATENCY  DETAIL
+main-site         http  https://example.com              ok      118ms
+api-gateway       http  https://api.example.com/healthz  slow    1624ms   slower than the 1500ms budget
+legacy-db         tcp   db.example.com:5432              FAIL    -        [Errno 61] Connection refused
+
+3 monitor(s) checked, 1 ok, 1 slow, 1 failed
+```
+
+This is the only subcommand that opens no database at all. It runs the checks
+the scheduler would run, against the config as written, and records nothing:
+no check results, no state transitions, no incidents, and nobody notified. So
+it's safe to run repeatedly against a live install while `alerts run` is
+running elsewhere, and it works against a config whose monitors have never
+been synced into a database -- which is the state a new config is in.
+
+Loading the config is half the check on its own. An unknown channel
+reference, a body assertion on a HEAD request, or a `${VAR}` naming a
+variable that isn't set all fail before a request goes out. The rest is what
+the targets actually say, which is the part no amount of validation can tell
+you.
+
+`RESULT` has three values, not two. A check that passes at or above its
+`degraded_latency_ms` budget reads `slow`: it succeeded, so calling it a
+failure would be wrong, but the scheduler seeing that same reading would mark
+the monitor degraded, so hiding it would mean hiding a budget that is about
+to start firing.
+
+`--monitor NAME` and `--tag NAME` narrow the run, and both narrow rather than
+override -- `--monitor api --tag prod` checks `api` only if it's tagged
+`prod`. `--exit-code` exits 1 if anything failed, for gating a deploy. A
+`--monitor` or `--tag` matching nothing fails under that flag rather than
+reporting an empty success: a typo passing silently is the one way a gate
+could fail unnoticed.
+
 Print the current state of every monitor and exit. It reads the same database
 the scheduler writes to, so it's safe to run against a live install:
 
@@ -63,16 +106,17 @@ alerts status --config config.yaml
 ```
 
 ```
-MONITOR      TYPE  STATE     UPTIME  LATENCY  P95     LAST CHECK  NOTE
-api-gateway  http  up        100.0%  87ms     104ms   12s ago
-main-site    http  degraded  99.8%   1624ms   3980ms  8s ago
-legacy-db    tcp   down      41.0%   -        -       30s ago     open incident, 2h 5m
+MONITOR      TYPE  TAGS           STATE     UPTIME  LATENCY  P95     LAST CHECK  NOTE
+api-gateway  http  prod,payments  up        100.0%  87ms     104ms   12s ago
+main-site    http  prod,web       degraded  99.8%   1624ms   3980ms  8s ago
+legacy-db    tcp   prod           down      41.0%   -        -       30s ago     open incident, 2h 5m
 
 3 monitor(s): 1 up, 1 degraded, 1 down
 ```
 
 `--exit-code` makes it exit 1 when anything is down, for use as a scripted
-check; without it the command always exits 0.
+check; without it the command always exits 0. `--tag NAME` narrows it to one
+group -- see [Tags](#tags).
 
 Report the incidents behind that status -- what has been breaking, for how
 long, and how quickly it came back:
@@ -143,13 +187,16 @@ alerts serve --config config.yaml
 The dashboard listens on `dashboard.host:dashboard.port` from the config
 (default `127.0.0.1:8080`) and serves:
 
-- `/` — all monitors, current state, uptime %, and average latency
+- `/` — all monitors, current state, uptime %, and average latency. `?tag=`
+  narrows it to one group, and the summary tiles count the filtered set
 - `/monitors/<name>` — one monitor's recent checks and incident history
-- `/api/monitors` — JSON summary of all monitors
+- `/api/monitors` — JSON summary of all monitors; `?tag=` narrows it and the
+  response echoes the tag it filtered on
 - `/api/monitors/<name>` — JSON detail for one monitor, including recent
   checks and incidents
 - `/api/summary` — JSON state tally and open-incident count; a constant-size
-  response whatever the monitor count, for a wallboard or a polling check
+  response whatever the monitor count, for a wallboard or a polling check.
+  `?tag=` narrows the state counts to one group
 - `/api/incidents` — JSON incident feed across every monitor, the counterpart
   of `alerts incidents`. Takes `?monitor=`, `?open`, `?days=`, and `?limit=`,
   and gives each incident a server-computed `duration_seconds` so no consumer
@@ -161,6 +208,54 @@ The dashboard listens on `dashboard.host:dashboard.port` from the config
 Every route answers `HEAD` with the headers a `GET` would return and no body,
 so the cheapest possible uptime check works against the dashboard too --
 including from an `alerts` monitor of its own.
+
+## Tags
+
+A monitor can carry free-form tags, which exist purely for grouping:
+
+```yaml
+monitors:
+  - name: api-gateway
+    type: http
+    target: https://api.example.com/healthz
+    tags: [prod, payments]
+```
+
+They change nothing about how a monitor is checked, alerted, or escalated.
+What they change is how much of the estate you have to read to answer a
+question about part of it:
+
+```bash
+alerts status --config config.yaml --tag prod
+alerts check --config config.yaml --tag payments --exit-code
+```
+
+The same filter works on the dashboard (`/?tag=prod`, and each tag on the
+index is a link to it), on `/api/monitors?tag=prod`, and on
+`/api/summary?tag=prod` -- the last of which makes a per-team wallboard
+possible, since it counts only that team's monitors and won't turn red for a
+service nobody on it owns. Both JSON routes echo back the tag they filtered
+on, so a client polling several tags into one view doesn't have to remember
+which response is which.
+
+Tags are folded to lowercase and stripped, so `Prod` and `prod` are the same
+tag: a monitor missing from a report because of how its tag was capitalised
+is the failure mode where someone concludes a service is fine having never
+seen it. Commas and whitespace are refused, since tags render as a
+comma-joined list.
+
+In `/metrics` each tag is its own series rather than a label on the existing
+ones -- a monitor has any number of tags and a Prometheus label holds one
+value. It joins the way any info-style series does:
+
+```promql
+alerts_monitor_state{state="down"} * on(monitor) group_left alerts_monitor_tag{tag="prod"}
+```
+
+One thing is deliberately *not* filtered: the open-incident count, in both
+`/api/summary` and the dashboard's tiles, stays estate-wide. Narrowing it
+would need a join from incidents back to tags, for the one figure whose job
+is to mean the same thing whichever view you are looking at.
 
 ## Latency percentiles
 
@@ -192,6 +287,7 @@ dashboard never disagree:
 | `alerts_monitor_latency_quantile_ms{monitor,type,quantile}` | Latency percentile over the recent checks |
 | `alerts_monitor_checks{monitor,type}` | How many checks those two figures cover |
 | `alerts_monitor_latency_budget_ms{monitor,type}` | The monitor's `degraded_latency_ms`, if set |
+| `alerts_monitor_tag{monitor,type,tag}` | 1 for each tag a monitor carries, for joining on |
 
 The quantile label carries the 0-1 fraction other exporters use
 (`quantile="0.95"`), so a dashboard panel written against one of them works
@@ -317,10 +413,12 @@ src/alerts/
   web/            # Read-only dashboard: WSGI app, HTML rendering, queries, /metrics
   maintenance.py  # Maintenance window schedules and whether one is active
   envsubst.py     # ${VAR} expansion for config values with a secret inside
-  reporting.py    # Plain-text tables for `alerts status`, `incidents`, `maintenance`
+  probe.py        # One-shot checks of the configured monitors, writing nothing
+  reporting.py    # Plain-text tables for `status`, `check`, `incidents`, `maintenance`
   retention.py    # Deletes history past the configured retention window
   timeutil.py     # Shared UTC helpers (everything stored is UTC, naive on read)
-  cli.py          # `alerts run` / `serve` / `status` / `incidents` / `maintenance` / `prune`
+  cli.py          # `alerts run` / `serve` / `check` / `status` / `incidents` /
+                  #   `maintenance` / `prune`
 migrations/       # Alembic migrations
 tests/
 ```
