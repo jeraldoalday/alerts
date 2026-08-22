@@ -30,10 +30,24 @@ from alerts.timeutil import as_utc_naive, utcnow
 from alerts.web import queries
 from alerts.web.stats import compute_uptime_stats
 
-_COLUMNS = ("MONITOR", "TYPE", "STATE", "UPTIME", "LATENCY", "P95", "LAST CHECK", "NOTE")
+_COLUMNS = (
+    "MONITOR",
+    "TYPE",
+    "TAGS",
+    "STATE",
+    "UPTIME",
+    "LATENCY",
+    "P95",
+    "LAST CHECK",
+    "NOTE",
+)
 _MAINTENANCE_COLUMNS = ("WINDOW", "SCHEDULE", "MONITORS", "STATUS")
 _INCIDENT_COLUMNS = ("MONITOR", "STARTED", "DURATION", "STATE", "CAUSE")
 _PROBE_COLUMNS = ("MONITOR", "TYPE", "TARGET", "RESULT", "LATENCY", "DETAIL")
+
+# `alerts status` shows a monitor's tags so an unfiltered table can still be
+# read by group. The probe table doesn't: it is already showing the target,
+# and a run is usually narrowed to a group rather than scanned for one.
 
 # A cause is a checker's error message, which can run to a whole TLS
 # handshake failure. Truncated so one long message doesn't push the other
@@ -64,6 +78,7 @@ class StatusRow:
     # by anything assembling this table from somewhere other than
     # `collect_status_rows` -- doesn't have to invent a percentile.
     p95_latency_ms: Optional[float] = None
+    tags: Sequence[str] = ()
 
     @property
     def is_down(self) -> bool:
@@ -86,10 +101,18 @@ def _open_incident(session: Session, monitor_id: int) -> Optional[Incident]:
     )
 
 
-def collect_status_rows(session: Session, *, checks_window: int = 50) -> List[StatusRow]:
-    """Build one row per monitor, with uptime over its last `checks_window` checks."""
+def collect_status_rows(
+    session: Session, *, checks_window: int = 50, tag: Optional[str] = None
+) -> List[StatusRow]:
+    """Build one row per monitor, with uptime over its last `checks_window` checks.
+
+    `tag` narrows the report to one group. A tag nothing carries yields no
+    rows rather than an error, the same as a `--monitor` naming nothing:
+    the summary line underneath says "0 monitor(s)", which is the honest
+    answer to a question about a group that is empty.
+    """
     rows: List[StatusRow] = []
-    for monitor in queries.list_monitors(session):
+    for monitor in queries.list_monitors(session, tag=tag):
         checks = queries.recent_check_results(session, monitor.id, checks_window)
         stats = compute_uptime_stats(checks)
         incident = _open_incident(session, monitor.id)
@@ -104,6 +127,7 @@ def collect_status_rows(session: Session, *, checks_window: int = 50) -> List[St
                 last_checked_at=checks[0].checked_at if checks else None,
                 open_incident_since=incident.started_at if incident else None,
                 paused=monitor.is_paused,
+                tags=tuple(monitor.tags or ()),
             )
         )
     return rows
@@ -150,6 +174,7 @@ def _cells(row: StatusRow, now: datetime) -> List[str]:
     return [
         row.name,
         row.type,
+        ",".join(row.tags),
         row.state.value,
         uptime,
         _latency(row.average_latency_ms),

@@ -26,7 +26,7 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional, Sequence
 
 from alerts.checkers.base import Checker, CheckOutcome, CheckRequest
-from alerts.config import MonitorConfig
+from alerts.config import MonitorConfig, normalise_tag
 from alerts.envsubst import MissingEnvVar
 from alerts.models import MonitorType
 from alerts.scheduler import default_checkers
@@ -75,19 +75,30 @@ class ProbeResult:
 
 
 def select_monitors(
-    monitors: Sequence[MonitorConfig], *, monitor: Optional[str] = None
+    monitors: Sequence[MonitorConfig],
+    *,
+    monitor: Optional[str] = None,
+    tag: Optional[str] = None,
 ) -> List[MonitorConfig]:
-    """The configured monitors a probe run should cover.
+    """The configured monitors a probe run should cover, in config order.
 
-    A name that matches nothing yields an empty list rather than an error,
+    Both filters narrow, so giving each of them keeps only the monitors that
+    satisfy both -- `--monitor api --tag prod` checks `api` if it is tagged
+    `prod` and nothing otherwise, rather than quietly ignoring one of the two
+    things that was asked for.
+
+    A filter that matches nothing yields an empty list rather than an error,
     matching how `alerts incidents --monitor` and the dashboard treat a name
-    nothing matches. The caller reports "no monitors" either way, and an
-    empty result is the honest answer to "check the one called `api`" when
-    there isn't one.
+    nothing matches. The caller reports it either way, and an empty result is
+    the honest answer to "check the ones tagged `prod`" when none are.
     """
-    if monitor is None:
-        return list(monitors)
-    return [config for config in monitors if config.name == monitor]
+    selected = list(monitors)
+    if monitor is not None:
+        selected = [config for config in selected if config.name == monitor]
+    if tag is not None:
+        wanted = normalise_tag(tag)
+        selected = [config for config in selected if wanted in config.tags]
+    return selected
 
 
 async def _probe_one(

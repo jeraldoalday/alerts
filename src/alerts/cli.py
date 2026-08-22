@@ -87,6 +87,7 @@ def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     )
     check_parser.add_argument("--config", default="config.yaml", help="Path to config.yaml")
     check_parser.add_argument("--monitor", help="Only check this monitor.")
+    check_parser.add_argument("--tag", help="Only check monitors carrying this tag.")
     check_parser.add_argument(
         "--exit-code",
         action="store_true",
@@ -102,6 +103,10 @@ def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         type=_bounded_int(1, MAX_CHECKS_WINDOW),
         default=50,
         help="How many recent checks per monitor the uptime figure covers (default: 50).",
+    )
+    status_parser.add_argument(
+        "--tag",
+        help="Only monitors carrying this tag.",
     )
     status_parser.add_argument(
         "--exit-code",
@@ -193,7 +198,19 @@ def _serve(config_path: str) -> None:
     serve(database, config.dashboard.host, config.dashboard.port)
 
 
-def _check(config_path: str, monitor: Optional[str], use_exit_code: bool) -> int:
+def _describe_selection(monitor: Optional[str], tag: Optional[str]) -> str:
+    """How a filtered-to-nothing run describes what it was asked for."""
+    parts = []
+    if monitor is not None:
+        parts.append(f"named {monitor!r}")
+    if tag is not None:
+        parts.append(f"tagged {tag!r}")
+    return " and ".join(parts)
+
+
+def _check(
+    config_path: str, monitor: Optional[str], tag: Optional[str], use_exit_code: bool
+) -> int:
     """Probe the configured targets once and print what came back.
 
     The only subcommand that opens no database at all. It runs the checks the
@@ -208,13 +225,13 @@ def _check(config_path: str, monitor: Optional[str], use_exit_code: bool) -> int
     variable that isn't set all fail here, before a single request goes out.
     """
     config = load_config(config_path)
-    monitors = select_monitors(config.monitors, monitor=monitor)
-    if monitor is not None and not monitors:
+    monitors = select_monitors(config.monitors, monitor=monitor, tag=tag)
+    if (monitor is not None or tag is not None) and not monitors:
         # Reported rather than rendered as an empty table, and failed under
         # --exit-code: the flag is there to gate a deploy on a service being
-        # healthy, and a typo in the name passing silently is the one way it
-        # could fail that nobody would notice.
-        print(f"No monitor named {monitor!r} in {config_path}.")
+        # healthy, and a typo in a name or a tag passing silently is the one
+        # way it could fail that nobody would notice.
+        print(f"No monitor {_describe_selection(monitor, tag)} in {config_path}.")
         return 1 if use_exit_code else 0
 
     results = asyncio.run(
@@ -229,20 +246,34 @@ def _check(config_path: str, monitor: Optional[str], use_exit_code: bool) -> int
     return 1 if use_exit_code and any(row.failed for row in rows) else 0
 
 
-def _status(config_path: str, checks_window: int, use_exit_code: bool) -> int:
+def _status(
+    config_path: str, checks_window: int, tag: Optional[str], use_exit_code: bool
+) -> int:
     """Print the status table, returning the process exit code.
 
     Reads the same database the scheduler writes to without starting one, so
     it's safe to run alongside a live `alerts run`. The non-zero exit is
     opt-in: a status report failing by default would surprise any script that
     just wants the table.
+
+    `tag` narrows it to one group, which is what makes the table readable on
+    an estate large enough to need one.
     """
     config = load_config(config_path)
     database = Database(config.database.url)
     database.create_all()
 
     with database.session() as session:
-        rows = collect_status_rows(session, checks_window=checks_window)
+        rows = collect_status_rows(session, checks_window=checks_window, tag=tag)
+
+    if tag is not None and not rows:
+        # "No monitors configured." would be a lie -- there are monitors,
+        # none of them carrying this tag. Failed under --exit-code for the
+        # same reason `alerts check` fails: a script asking whether anything
+        # tagged `prod` is down must not report success because the tag was
+        # mistyped.
+        print(f"No monitor tagged {tag!r}.")
+        return 1 if use_exit_code else 0
 
     print(format_status_table(rows))
     print()
@@ -367,9 +398,16 @@ def main(argv: Optional[List[str]] = None) -> int:
     elif args.command == "serve":
         _serve(args.config)
     elif args.command == "check":
-        return _check(args.config, monitor=args.monitor, use_exit_code=args.exit_code)
+        return _check(
+            args.config, monitor=args.monitor, tag=args.tag, use_exit_code=args.exit_code
+        )
     elif args.command == "status":
-        return _status(args.config, checks_window=args.checks, use_exit_code=args.exit_code)
+        return _status(
+            args.config,
+            checks_window=args.checks,
+            tag=args.tag,
+            use_exit_code=args.exit_code,
+        )
     elif args.command == "incidents":
         return _incidents(
             args.config,

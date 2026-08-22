@@ -51,6 +51,7 @@ def test_table_has_a_header_and_one_line_per_monitor():
     assert lines[0].split() == [
         "MONITOR",
         "TYPE",
+        "TAGS",
         "STATE",
         "UPTIME",
         "LATENCY",
