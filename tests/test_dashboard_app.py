@@ -148,6 +148,7 @@ def test_api_monitors_returns_json_summary(db):
         {
             "name": "api-site",
             "type": "http",
+            "tags": [],
             "state": "down",
             "paused": False,
             "degraded_latency_ms": None,
@@ -163,7 +164,7 @@ def test_api_monitors_returns_empty_list_when_no_monitors(db):
 
     _, _, body = _call(app, "/api/monitors")
 
-    assert json.loads(body) == {"monitors": []}
+    assert json.loads(body) == {"monitors": [], "tag": None}
 
 
 def test_api_monitor_detail_returns_checks_and_incidents(db):

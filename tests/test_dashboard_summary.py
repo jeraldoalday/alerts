@@ -144,6 +144,7 @@ def test_api_summary_returns_state_counts(db):
         "total": 2,
         "open_incidents": 1,
         "paused": 0,
+        "tag": None,
         "states": {"unknown": 0, "up": 1, "degraded": 0, "down": 1},
     }
 

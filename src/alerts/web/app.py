@@ -108,6 +108,19 @@ def _flag_param(params: Dict[str, List[str]], name: str) -> bool:
     return raw[-1].strip().lower() in ("", "1", "true", "yes", "on")
 
 
+def _tag_param(params: Dict[str, List[str]], name: str = "tag") -> Optional[str]:
+    """The tag to filter by, or None when the caller wants everything.
+
+    A blank `?tag=` is treated as absent rather than as a tag nobody has:
+    it is what a form submitted with the filter cleared sends, and answering
+    that with an empty listing would be a strange way to say "all".
+    """
+    raw = params.get(name)
+    if not raw:
+        return None
+    return raw[-1].strip() or None
+
+
 class DashboardApp:
     def __init__(self, database: Database, recent_checks_limit: int = 50):
         self._database = database
@@ -148,15 +161,15 @@ class DashboardApp:
         monitor called `cache%2Fhit` resolved to `cache/hit` and 404'd.
         """
         if path == "/":
-            return self._index(start_response)
+            return self._index(start_response, query)
         if path == "/healthz":
             return self._healthz(start_response)
         if path == "/metrics":
             return self._metrics(start_response)
         if path == "/api/summary":
-            return self._api_summary(start_response)
+            return self._api_summary(start_response, query)
         if path == "/api/monitors":
-            return self._api_monitors(start_response)
+            return self._api_monitors(start_response, query)
         if path == "/api/incidents":
             return self._api_incidents(start_response, query)
         if path.startswith("/api/monitors/"):
@@ -165,9 +178,21 @@ class DashboardApp:
             return self._monitor_detail(start_response, path[len("/monitors/") :])
         return self._not_found(start_response)
 
-    def _index(self, start_response: StartResponse) -> Iterable[bytes]:
+    def _index(self, start_response: StartResponse, query: str = "") -> Iterable[bytes]:
+        """The monitor table, optionally narrowed to one tag.
+
+        The summary tiles are computed over the same filtered set, so a
+        `?tag=prod` view counts what is down in `prod` rather than repeating
+        the estate-wide numbers above a table that no longer matches them.
+
+        The open-incident tile is the one exception: it is a count across
+        every monitor, since narrowing it would need a join from incidents
+        back to tags for a number whose whole job is being the one figure
+        that doesn't depend on which view you are looking at.
+        """
+        tag = _tag_param(parse_qs(query, keep_blank_values=True))
         with self._database.session() as session:
-            monitors = queries.list_monitors(session)
+            monitors = queries.list_monitors(session, tag=tag)
             rows = []
             for monitor in monitors:
                 checks = queries.recent_check_results(
@@ -177,7 +202,9 @@ class DashboardApp:
                 last_checked_at = checks[0].checked_at if checks else None
                 rows.append((monitor, stats, last_checked_at))
             summary = summarize_states(monitors, queries.count_open_incidents(session))
-            body = render.render_index(rows, summary)
+            body = render.render_index(
+                rows, summary, tags=queries.known_tags(session), active_tag=tag
+            )
         return self._respond_html(start_response, "200 OK", body)
 
     def _monitor_detail(self, start_response: StartResponse, name: str) -> Iterable[bytes]:
@@ -207,6 +234,7 @@ class DashboardApp:
                 "name": monitor.name,
                 "type": monitor.type.value,
                 "target": monitor.target,
+                "tags": list(monitor.tags or []),
                 "state": monitor.state.value,
                 "paused": monitor.is_paused,
                 "degraded_latency_ms": monitor.degraded_latency_ms,
@@ -237,10 +265,17 @@ class DashboardApp:
             }
         return self._respond_json(start_response, "200 OK", payload)
 
-    def _api_monitors(self, start_response: StartResponse) -> Iterable[bytes]:
+    def _api_monitors(self, start_response: StartResponse, query: str = "") -> Iterable[bytes]:
+        """Every monitor's current reading, optionally narrowed to one tag.
+
+        The response echoes the tag it filtered on rather than leaving the
+        caller to remember what it asked for, which matters for a client that
+        polls several tags into one view.
+        """
+        tag = _tag_param(parse_qs(query, keep_blank_values=True))
         with self._database.session() as session:
             payload = []
-            for monitor in queries.list_monitors(session):
+            for monitor in queries.list_monitors(session, tag=tag):
                 checks = queries.recent_check_results(
                     session, monitor.id, self._recent_checks_limit
                 )
@@ -249,6 +284,7 @@ class DashboardApp:
                     {
                         "name": monitor.name,
                         "type": monitor.type.value,
+                        "tags": list(monitor.tags or []),
                         "state": monitor.state.value,
                         "paused": monitor.is_paused,
                         "degraded_latency_ms": monitor.degraded_latency_ms,
@@ -257,7 +293,9 @@ class DashboardApp:
                         "latency_percentiles": _percentile_payload(stats),
                     }
                 )
-        return self._respond_json(start_response, "200 OK", {"monitors": payload})
+        return self._respond_json(
+            start_response, "200 OK", {"monitors": payload, "tag": tag}
+        )
 
     def _api_incidents(self, start_response: StartResponse, query: str) -> Iterable[bytes]:
         """The estate-wide incident feed, newest first.
@@ -319,21 +357,29 @@ class DashboardApp:
             start_response, "200 OK", {"incidents": payload, "open": open_count}
         )
 
-    def _api_summary(self, start_response: StartResponse) -> Iterable[bytes]:
+    def _api_summary(self, start_response: StartResponse, query: str = "") -> Iterable[bytes]:
         """Aggregate state counts, for a wallboard or an external alert check.
 
         Separate from /api/monitors because it stays a constant-size response
         however many monitors exist, and answers the one question a polling
         client usually has: is anything broken right now?
+
+        `?tag=` narrows it to one group, which is what makes it usable as a
+        per-team check: a payments wallboard asking "is anything of ours
+        down" shouldn't turn red for a monitor nobody on that team owns.
+        `open_incidents` stays estate-wide -- see `_index`.
         """
+        tag = _tag_param(parse_qs(query, keep_blank_values=True))
         with self._database.session() as session:
             summary = summarize_states(
-                queries.list_monitors(session), queries.count_open_incidents(session)
+                queries.list_monitors(session, tag=tag),
+                queries.count_open_incidents(session),
             )
         payload = {
             "total": summary.total,
             "open_incidents": summary.open_incidents,
             "paused": summary.paused,
+            "tag": tag,
             "states": {state.value: count for state, count in summary.counts.items()},
         }
         return self._respond_json(start_response, "200 OK", payload)

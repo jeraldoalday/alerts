@@ -114,6 +114,15 @@ def render_metrics(
     computed by the process being measured over its own lifetime; these are
     computed here over a fixed window of recent checks, and claiming the type
     would promise the `_sum` and `_count` series a summary comes with.
+
+    Tags are exported as their own `alerts_monitor_tag` series rather than as
+    a label on the existing ones. A monitor carries any number of tags and a
+    Prometheus label holds one value, so folding them in would mean either
+    picking one arbitrarily or a comma-joined string nothing can match
+    against. As a separate series they are joinable in the usual way:
+    `alerts_monitor_state{state="down"} * on(monitor) group_left
+    alerts_monitor_tag{tag="prod"}` alerts on one group without any of the
+    other series changing shape.
     """
     state_family = _Family(
         "alerts_monitor_state",
@@ -139,6 +148,10 @@ def render_metrics(
         "alerts_monitor_latency_quantile_ms",
         "Latency percentile in milliseconds over the recent checks.",
     )
+    tag_family = _Family(
+        "alerts_monitor_tag",
+        "1 for each tag a monitor carries, as a joinable label set.",
+    )
 
     exported = 0
     for monitor, stats in rows:
@@ -160,6 +173,8 @@ def render_metrics(
                 quantile_family.add(value, [*labels, ("quantile", _quantile_label(percent))])
         if monitor.degraded_latency_ms is not None:
             budget_family.add(monitor.degraded_latency_ms, labels)
+        for tag in monitor.tags or []:
+            tag_family.add(1, [*labels, ("tag", tag)])
 
     monitors_family = _Family("alerts_monitors", "Number of monitors being checked.")
     monitors_family.add(exported)
@@ -178,6 +193,7 @@ def render_metrics(
         quantile_family,
         checks_family,
         budget_family,
+        tag_family,
     ):
         lines.extend(family.render())
     return "\n".join(lines) + "\n"

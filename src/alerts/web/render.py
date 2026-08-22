@@ -38,6 +38,11 @@ th { color: #57606a; font-weight: 600; font-size: 0.85rem; text-transform: upper
 .tile { border: 1px solid #d0d7de; border-radius: 6px; padding: 0.5rem 0.9rem; min-width: 4.5rem; }
 .tile .count { display: block; font-size: 1.4rem; font-weight: 600; line-height: 1.2; }
 .tile .label { font-size: 0.75rem; text-transform: uppercase; color: #57606a; letter-spacing: 0.03em; }
+.tags { margin: 1rem 0 0; }
+.tag { display: inline-block; padding: 0.1rem 0.5rem; margin-right: 0.3rem; border-radius: 4px;
+  background: #eaeef2; color: #57606a; font-size: 0.78rem; text-decoration: none; }
+.tag:hover { background: #d0d7de; text-decoration: none; }
+.tag.current { background: #0969da; color: #fff; }
 """
 
 
@@ -49,6 +54,16 @@ def _page(title: str, body: str) -> str:
     )
 
 
+def _url_query(value: str) -> str:
+    """Percent-encode a value for use in a query string.
+
+    Separate from `_url_path` because the two escape different things: a
+    space is legal in a path segment's encoding as `%20` either way, but the
+    `&` and `=` that delimit query parameters must not survive into one.
+    """
+    return escape(quote(value, safe=""))
+
+
 def _url_path(monitor_name: str) -> str:
     """Percent-encode a monitor name for use in a URL path.
 
@@ -58,6 +73,44 @@ def _url_path(monitor_name: str) -> str:
     the route then fails to match.
     """
     return escape(quote(monitor_name, safe=""))
+
+
+def _tag_class(tag: Optional[str], active: Optional[str]) -> str:
+    """The CSS classes for one tag link, marking the one being filtered on."""
+    return "tag current" if tag == active else "tag"
+
+
+def _tag_links(monitor: Monitor, active: Optional[str] = None) -> str:
+    """A monitor's tags, each linking to the index filtered by it.
+
+    Links rather than plain text: seeing that a monitor is tagged `payments`
+    and immediately wanting the rest of `payments` is the whole reason the
+    tag is on the page. The one currently being filtered on is marked so the
+    view says what it is showing, since a filtered index otherwise looks
+    exactly like an estate that has lost most of its monitors.
+    """
+    if not monitor.tags:
+        return ""
+    return " ".join(
+        f'<a class="{_tag_class(tag, active)}" href="/?tag={_url_query(tag)}">{escape(tag)}</a>'
+        for tag in monitor.tags
+    )
+
+
+def render_tag_filter(tags: Sequence[str], active: Optional[str] = None) -> str:
+    """The row of tag filters above the index, with the active one marked.
+
+    Rendered only when a tag exists to filter by, so an install that doesn't
+    use tags never sees the control at all.
+    """
+    if not tags:
+        return ""
+    links = [f'<a class="{_tag_class(None, active)}" href="/">all</a>']
+    links += [
+        f'<a class="{_tag_class(tag, active)}" href="/?tag={_url_query(tag)}">{escape(tag)}</a>'
+        for tag in tags
+    ]
+    return f'<p class="tags">{" ".join(links)}</p>'
 
 
 def _paused_marker(monitor: Monitor) -> str:
@@ -145,6 +198,8 @@ def render_summary(summary: StateSummary) -> str:
 def render_index(
     rows: Sequence[Tuple[Monitor, UptimeStats, object]],
     summary: Optional[StateSummary] = None,
+    tags: Sequence[str] = (),
+    active_tag: Optional[str] = None,
 ) -> str:
     body_rows: List[str] = []
     for monitor, stats, last_checked_at in rows:
@@ -153,6 +208,7 @@ def render_index(
             f'<td><a href="/monitors/{_url_path(monitor.name)}">{escape(monitor.name)}</a>'
             f"{_paused_marker(monitor)}</td>"
             f"<td>{escape(monitor.type.value)}</td>"
+            f"<td>{_tag_links(monitor, active_tag)}</td>"
             f"<td>{_state_badge(monitor.state)}</td>"
             f"<td>{_format_percentage(stats.uptime_percentage)}</td>"
             f"<td>{_format_latency(stats.average_latency_ms)}</td>"
@@ -161,16 +217,28 @@ def render_index(
             "</tr>"
         )
 
-    empty_row = '<tr><td colspan="7" class="muted">No monitors configured.</td></tr>'
+    # The empty message depends on why the table is empty. A filtered view
+    # showing nothing is not an install with no monitors, and saying so would
+    # send someone looking for a configuration problem that isn't there.
+    empty_message = (
+        f"No monitors tagged {escape(active_tag)}."
+        if active_tag is not None
+        else "No monitors configured."
+    )
+    empty_row = f'<tr><td colspan="8" class="muted">{empty_message}</td></tr>'
     table = (
-        "<table><thead><tr><th>Monitor</th><th>Type</th><th>State</th>"
+        "<table><thead><tr><th>Monitor</th><th>Type</th><th>Tags</th><th>State</th>"
         "<th>Uptime</th><th>Avg latency</th><th>p95 latency</th>"
         "<th>Last checked</th></tr></thead>"
         f"<tbody>{''.join(body_rows) or empty_row}</tbody>"
         "</table>"
     )
     summary_html = render_summary(summary) if summary is not None else ""
-    return _page("alerts dashboard", f"<h1>Monitors</h1>{summary_html}{table}")
+    filter_html = render_tag_filter(tags, active_tag)
+    heading = "Monitors" if active_tag is None else f"Monitors: {escape(active_tag)}"
+    return _page(
+        "alerts dashboard", f"<h1>{heading}</h1>{summary_html}{filter_html}{table}"
+    )
 
 
 def _check_result_row(result: CheckResult) -> str:
@@ -247,6 +315,7 @@ def render_monitor_detail(
         '<div class="nav"><a href="/">&larr; all monitors</a></div>'
         f"<h1>{escape(monitor.name)}</h1>"
         f'<p class="muted">{escape(monitor.type.value)} &middot; {escape(monitor.target)}</p>'
+        f'{f"<p>{_tag_links(monitor)}</p>" if monitor.tags else ""}'
         f"{paused_note}"
         f"<p>{_state_badge(monitor.state)} "
         f"&nbsp; uptime {_format_percentage(stats.uptime_percentage)} "
