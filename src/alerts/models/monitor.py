@@ -62,6 +62,11 @@ class Monitor(Base):
     method: Mapped[str] = mapped_column(String(10), default="GET", server_default="GET")
     headers: Mapped[Dict[str, str]] = mapped_column(JSON, default=dict)
     channels: Mapped[List[str]] = mapped_column(JSON, default=list)
+    # Free-form grouping labels, normalised by the config loader before they
+    # get here. Stored as JSON alongside `channels` rather than in a join
+    # table: they carry no behaviour and nothing joins on them, and a
+    # handful of strings per monitor is not a relation worth modelling.
+    tags: Mapped[List[str]] = mapped_column(JSON, default=list)
     # False once a monitor disappears from the config. The row (and its
     # history) is kept, but the scheduler stops checking it -- see
     # `sync_monitors`.
@@ -90,6 +95,15 @@ class Monitor(Base):
     incidents: Mapped[List["Incident"]] = relationship(
         back_populates="monitor", cascade="all, delete-orphan"
     )
+
+    def has_tag(self, tag: str) -> bool:
+        """Whether this monitor carries a tag, compared on the folded spelling.
+
+        The stored tags are already normalised, so only the argument needs
+        folding -- which is what makes a `?tag=Prod` in a URL or a `--tag
+        Prod` at a terminal match what the config declared.
+        """
+        return tag.strip().lower() in (self.tags or [])
 
     @property
     def is_paused(self) -> bool:
