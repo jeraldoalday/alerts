@@ -70,6 +70,12 @@ monitors:
     # this substring, even when the status code matches. Useful for health
     # endpoints that answer 200 with a body describing what's broken.
     expected_body_contains: "ok"
+    # Free-form grouping labels. They change nothing about how the monitor is
+    # checked or alerted -- they exist so `alerts status --tag prod`, the
+    # dashboard's tag filter, and `/api/monitors?tag=prod` can narrow a large
+    # estate to the part you are responsible for. Folded to lowercase; no
+    # commas or spaces.
+    tags: [prod, web]
     channels: [ops-slack, ops-email]
 
   - name: api-gateway
@@ -84,6 +90,7 @@ monitors:
     headers:
       Authorization: "Bearer ${API_TOKEN}"
       Accept: application/json
+    tags: [prod, api, payments]
     channels: [ops-slack]
 
   - name: dashboard-itself
@@ -94,6 +101,7 @@ monitors:
     target: http://127.0.0.1:8080/healthz
     method: HEAD
     interval_seconds: 60
+    tags: [internal]
     channels: [ops-slack]
 
 channels:

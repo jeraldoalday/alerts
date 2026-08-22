@@ -102,3 +102,22 @@ def test_a_missing_variable_makes_the_example_fail_to_load(monkeypatch):
 
     with pytest.raises(Exception):
         load_config(EXAMPLE)
+
+
+def test_the_examples_tags_survive_validation(example_env):
+    """The example is where anyone learns the tag spelling rules."""
+    config = load_config(EXAMPLE)
+
+    assert config.tags(), "the example is meant to show tags"
+    for monitor in config.monitors:
+        for tag in monitor.tags:
+            assert tag == tag.strip().lower()
+            assert "," not in tag and " " not in tag
+
+
+def test_every_tag_in_the_example_is_carried_by_a_monitor(example_env):
+    """`config.tags()` and the per-monitor lists have to agree."""
+    config = load_config(EXAMPLE)
+
+    for tag in config.tags():
+        assert config.monitors_tagged(tag), f"tag {tag!r} is listed but on no monitor"
