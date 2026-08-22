@@ -53,11 +53,7 @@ def exceeds_latency_budget(monitor: Monitor, outcome: CheckOutcome) -> bool:
     checker that reports no latency at all (a config error surfaced before
     any connection was attempted, say) can't be judged slow.
     """
-    return (
-        monitor.degraded_latency_ms is not None
-        and outcome.latency_ms is not None
-        and outcome.latency_ms >= monitor.degraded_latency_ms
-    )
+    return outcome.exceeds_budget(monitor.degraded_latency_ms)
 
 
 def apply_check_outcome(monitor: Monitor, outcome: CheckOutcome) -> None:
