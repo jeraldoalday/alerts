@@ -314,8 +314,13 @@ class MonitorConfig(BaseModel):
         and it is invisible until the first failure. Refusing it at load
         time names the three knobs that fix it, which is what an operator
         would otherwise have to derive.
+
+        An exact 100% target is exempt. It affords nothing at any window or
+        interval, but that is the whole point of writing it down: someone
+        typing 100 is deliberately saying every failure counts, which is a
+        choice rather than the accident this check exists to catch.
         """
-        if self.slo_target is None:
+        if self.slo_target is None or self.slo_target >= MAX_TARGET:
             return self
         checks_in_window = (
             self.slo_window_days * SECONDS_PER_DAY
