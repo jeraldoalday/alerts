@@ -8,6 +8,7 @@ from sqlalchemy import JSON, Boolean, Enum, Float, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from alerts.models.base import Base
+from alerts.slo import DEFAULT_WINDOW_DAYS as DEFAULT_SLO_WINDOW_DAYS
 from alerts.tags import normalise as normalise_tag
 from alerts.timeutil import utcnow
 
@@ -63,6 +64,16 @@ class Monitor(Base):
     method: Mapped[str] = mapped_column(String(10), default="GET", server_default="GET")
     headers: Mapped[Dict[str, str]] = mapped_column(JSON, default=dict)
     channels: Mapped[List[str]] = mapped_column(JSON, default=list)
+    # The availability this monitor is expected to hold, as a percentage,
+    # over a rolling window of `slo_window_days`. NULL means no objective:
+    # the monitor is watched, but nothing is being promised about it. The
+    # window is NOT NULL and carries a default because it is only ever read
+    # alongside a target, and a target with no window would have nothing to
+    # be measured over.
+    slo_target: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    slo_window_days: Mapped[int] = mapped_column(
+        Integer, default=DEFAULT_SLO_WINDOW_DAYS, server_default=str(DEFAULT_SLO_WINDOW_DAYS)
+    )
     # Free-form grouping labels, normalised by the config loader before they
     # get here. Stored as JSON alongside `channels` rather than in a join
     # table: they carry no behaviour and nothing joins on them, and a
@@ -105,6 +116,16 @@ class Monitor(Base):
         Prod` at a terminal match what the config declared.
         """
         return normalise_tag(tag) in (self.tags or [])
+
+    @property
+    def has_slo(self) -> bool:
+        """Whether an availability objective has been declared for this monitor.
+
+        Reported everywhere rather than inferred from a target of 0, because
+        0 is not a valid target -- a service allowed to be down always has no
+        objective, and NULL is how that is spelled.
+        """
+        return self.slo_target is not None
 
     @property
     def is_paused(self) -> bool:

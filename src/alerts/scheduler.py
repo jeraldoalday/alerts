@@ -187,6 +187,8 @@ def sync_monitors(session, monitor_configs: Iterable[MonitorConfig]) -> None:
                     headers=dict(cfg.headers),
                     channels=list(cfg.channels),
                     tags=list(cfg.tags),
+                    slo_target=cfg.slo_target,
+                    slo_window_days=cfg.slo_window_days,
                     enabled=True,
                 )
             )
@@ -204,6 +206,8 @@ def sync_monitors(session, monitor_configs: Iterable[MonitorConfig]) -> None:
             monitor.headers = dict(cfg.headers)
             monitor.channels = list(cfg.channels)
             monitor.tags = list(cfg.tags)
+            monitor.slo_target = cfg.slo_target
+            monitor.slo_window_days = cfg.slo_window_days
             if monitor.is_paused:
                 _reenable_monitor(monitor)
             monitor.enabled = True
