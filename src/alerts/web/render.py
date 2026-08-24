@@ -8,10 +8,11 @@ trusted as safe-to-embed markup).
 from __future__ import annotations
 
 from html import escape
-from typing import List, Optional, Sequence, Tuple
+from typing import List, Mapping, Optional, Sequence, Tuple
 from urllib.parse import quote
 
 from alerts.models import CheckResult, Incident, IncidentState, Monitor, MonitorState
+from alerts.slo import BudgetStatus, ErrorBudget
 from alerts.web.stats import StateSummary, UptimeStats
 
 _STATE_COLORS = {
@@ -19,6 +20,17 @@ _STATE_COLORS = {
     MonitorState.DEGRADED: "#9a6700",
     MonitorState.DOWN: "#cf222e",
     MonitorState.UNKNOWN: "#57606a",
+}
+
+# Deliberately the same three colours the states use. A budget running low
+# is the same kind of warning as a degraded monitor, and a missed target the
+# same kind of alarm as a down one; giving them a second palette would make
+# a reader learn two colour schemes for one page.
+_BUDGET_COLORS = {
+    BudgetStatus.OK: _STATE_COLORS[MonitorState.UP],
+    BudgetStatus.AT_RISK: _STATE_COLORS[MonitorState.DEGRADED],
+    BudgetStatus.BREACHED: _STATE_COLORS[MonitorState.DOWN],
+    BudgetStatus.NO_DATA: _STATE_COLORS[MonitorState.UNKNOWN],
 }
 
 _STYLE = """
@@ -160,6 +172,85 @@ def _percentile_summary(stats: UptimeStats) -> str:
     return f'<span class="muted">{pairs}</span>'
 
 
+def _budget_cell(budget: Optional[ErrorBudget]) -> str:
+    """One monitor's standing against its target, for the index table.
+
+    Both halves are shown -- the promise and what is left of the budget --
+    because either alone is unreadable. "65% left" says nothing without
+    knowing 65% of what, and a bare "99.9%" is the target being confused for
+    the achievement, which is the specific misreading an SLO column exists
+    to prevent.
+
+    A monitor with no objective gets an em dash rather than a blank cell, so
+    a column of them reads as "nothing promised here" rather than as a
+    rendering that failed.
+    """
+    if budget is None:
+        return '<span class="muted">&mdash;</span>'
+    target = f"{budget.target_percentage:.2f}%"
+    remaining = budget.remaining_ratio
+    if remaining is None:
+        detail = "no data"
+    elif remaining <= 0:
+        detail = "spent"
+    else:
+        detail = f"{remaining * 100:.0f}% left"
+    color = _BUDGET_COLORS[budget.status]
+    return (
+        f'{escape(target)} <span style="color:{color}">&middot; {escape(detail)}</span>'
+    )
+
+
+def _budget_detail(budget: Optional[ErrorBudget]) -> str:
+    """The SLO block on a monitor's own page.
+
+    Rendered only for a monitor that has a target: a page that says "no SLO
+    configured" on every one of forty services is a page nobody reads to the
+    bottom of.
+
+    The figures are the same ones `alerts slo` prints, in the same order, so
+    someone moving between the two surfaces is reading one report rather
+    than reconciling two.
+    """
+    if budget is None:
+        return ""
+    color = _BUDGET_COLORS[budget.status]
+    parts = [
+        f'<span class="badge" style="background:{color}">'
+        f"{escape(budget.status.value)}</span>",
+        f"&nbsp; target {budget.target_percentage:.2f}% over {budget.window_days}d",
+    ]
+    if budget.actual_percentage is not None:
+        parts.append(f"&nbsp; measured {budget.actual_percentage:.2f}%")
+    parts.append(f"&nbsp; over {budget.total_checks} check(s)")
+    remaining = budget.remaining_downtime_seconds
+    if remaining is not None:
+        parts.append(
+            f'<br><span class="muted">{_format_seconds(remaining)} of '
+            f"{_format_seconds(budget.allowed_downtime_seconds)} of downtime "
+            "budget left</span>"
+        )
+    return f"<h2>Objective</h2><p>{''.join(parts)}</p>"
+
+
+def _format_seconds(value: float) -> str:
+    """A compact duration for the budget line.
+
+    A local, deliberately simple spelling rather than an import from the
+    reporting module: the dashboard doesn't otherwise depend on the CLI
+    tables, and one shared helper would tie a web page's wording to a
+    terminal report's column widths.
+    """
+    seconds = max(int(value), 0)
+    hours, seconds = divmod(seconds, 3600)
+    minutes, seconds = divmod(seconds, 60)
+    if hours:
+        return f"{hours}h {minutes}m"
+    if minutes:
+        return f"{minutes}m"
+    return f"{seconds}s"
+
+
 def _summary_tile(label: str, count: int, color: Optional[str] = None) -> str:
     style = f' style="color:{color}"' if color and count else ""
     return (
@@ -200,7 +291,18 @@ def render_index(
     summary: Optional[StateSummary] = None,
     tags: Sequence[str] = (),
     active_tag: Optional[str] = None,
+    budgets: Optional[Mapping[str, ErrorBudget]] = None,
 ) -> str:
+    """The monitor table.
+
+    Budgets arrive as a mapping keyed by monitor name rather than as a
+    fourth element of each row: they are measured over the monitor's own SLO
+    window, while the uptime beside them covers a fixed count of recent
+    checks, and putting two different windows in one tuple would suggest
+    they are the same reading. A monitor with no objective is absent from
+    the mapping and gets an em dash.
+    """
+    budgets = budgets or {}
     body_rows: List[str] = []
     for monitor, stats, last_checked_at in rows:
         body_rows.append(
@@ -213,6 +315,7 @@ def render_index(
             f"<td>{_format_percentage(stats.uptime_percentage)}</td>"
             f"<td>{_format_latency(stats.average_latency_ms)}</td>"
             f"<td>{_format_latency(stats.p95_latency_ms)}</td>"
+            f"<td>{_budget_cell(budgets.get(monitor.name))}</td>"
             f"<td>{_format_timestamp(last_checked_at)}</td>"
             "</tr>"
         )
@@ -225,10 +328,10 @@ def render_index(
         if active_tag is not None
         else "No monitors configured."
     )
-    empty_row = f'<tr><td colspan="8" class="muted">{empty_message}</td></tr>'
+    empty_row = f'<tr><td colspan="9" class="muted">{empty_message}</td></tr>'
     table = (
         "<table><thead><tr><th>Monitor</th><th>Type</th><th>Tags</th><th>State</th>"
-        "<th>Uptime</th><th>Avg latency</th><th>p95 latency</th>"
+        "<th>Uptime</th><th>Avg latency</th><th>p95 latency</th><th>SLO</th>"
         "<th>Last checked</th></tr></thead>"
         f"<tbody>{''.join(body_rows) or empty_row}</tbody>"
         "</table>"
@@ -289,6 +392,7 @@ def render_monitor_detail(
     stats: UptimeStats,
     check_results: Sequence[CheckResult],
     incidents: Sequence[Incident],
+    budget: Optional[ErrorBudget] = None,
 ) -> str:
     empty_checks_row = '<tr><td colspan="5" class="muted">No checks yet.</td></tr>'
     checks_table = (
@@ -322,6 +426,7 @@ def render_monitor_detail(
         f"&nbsp; avg latency {_format_latency(stats.average_latency_ms)}"
         f"{_latency_budget_note(monitor)}</p>"
         f"<p>{_percentile_summary(stats)}</p>"
+        f"{_budget_detail(budget)}"
         f"<h2>Recent checks</h2>{checks_table}"
         f"<h2>Incidents</h2>{incidents_table}"
     )

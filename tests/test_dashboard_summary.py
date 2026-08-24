@@ -146,6 +146,10 @@ def test_api_summary_returns_state_counts(db):
         "paused": 0,
         "tag": None,
         "states": {"unknown": 0, "up": 1, "degraded": 0, "down": 1},
+        "slo": {
+            "with_target": 0,
+            "statuses": {"ok": 0, "at-risk": 0, "breached": 0, "no-data": 0},
+        },
     }
 
 

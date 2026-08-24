@@ -155,6 +155,7 @@ def test_api_monitors_returns_json_summary(db):
             "uptime_percentage": 0.0,
             "average_latency_ms": None,
             "latency_percentiles": {"p50": None, "p95": None, "p99": None},
+            "slo": None,
         }
     ]
 

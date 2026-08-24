@@ -84,8 +84,8 @@ def test_the_index_row_still_matches_its_header_width():
     """The empty-state row spans the table, so its colspan tracks the columns."""
     html = render.render_index([])
 
-    assert html.count("<th>") == 8
-    assert 'colspan="8"' in html
+    assert html.count("<th>") == 9
+    assert 'colspan="9"' in html
 
 
 def test_the_detail_page_lists_every_percentile():

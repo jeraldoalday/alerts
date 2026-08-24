@@ -15,6 +15,7 @@ from urllib.parse import parse_qs
 
 from alerts.db import Database
 from alerts.models import IncidentState
+from alerts.slo import ErrorBudget, summarize_budgets
 from alerts.tags import normalise as normalise_tag
 from alerts.timeutil import as_utc_naive, utcnow
 from alerts.web import metrics, queries, render
@@ -45,6 +46,36 @@ def _percentile_payload(stats: UptimeStats) -> Dict[str, Optional[float]]:
     and "95" invites a client to parse it back into one anyway.
     """
     return {f"p{percent}": value for percent, value in stats.latency_percentiles.items()}
+
+
+def _slo_payload(budget: Optional[ErrorBudget]) -> Optional[Dict[str, Any]]:
+    """One monitor's standing against its objective, or null without one.
+
+    Null rather than an object full of nulls: a client asking whether a
+    service is meeting its promise needs to tell "missing the target" apart
+    from "was never given one", and a shape that only differs in its values
+    invites reading the second as the first.
+
+    Both the ratio and the derived durations are sent. The ratio is the
+    measurement and is what an alert should key off -- above 1 means the
+    target is missed -- while the seconds are the translation a status page
+    puts in front of a human, and computing them client-side would need the
+    monitor's interval, which this payload deliberately doesn't carry.
+    """
+    if budget is None:
+        return None
+    return {
+        "target_percentage": budget.target_percentage,
+        "window_days": budget.window_days,
+        "actual_percentage": budget.actual_percentage,
+        "total_checks": budget.total_checks,
+        "failed_checks": budget.failed_checks,
+        "budget_consumed_ratio": budget.consumed_ratio,
+        "budget_remaining_ratio": budget.remaining_ratio,
+        "allowed_downtime_seconds": budget.allowed_downtime_seconds,
+        "remaining_downtime_seconds": budget.remaining_downtime_seconds,
+        "status": budget.status.value,
+    }
 
 
 def _decoded_path(environ: dict) -> str:
@@ -208,9 +239,19 @@ class DashboardApp:
                 stats = compute_uptime_stats(checks)
                 last_checked_at = checks[0].checked_at if checks else None
                 rows.append((monitor, stats, last_checked_at))
+            budgets = {
+                monitor.name: budget
+                for monitor in monitors
+                for budget in [queries.error_budget(session, monitor)]
+                if budget is not None
+            }
             summary = summarize_states(monitors, queries.count_open_incidents(session))
             body = render.render_index(
-                rows, summary, tags=queries.known_tags(session), active_tag=tag
+                rows,
+                summary,
+                tags=queries.known_tags(session),
+                active_tag=tag,
+                budgets=budgets,
             )
         return self._respond_html(start_response, "200 OK", body)
 
@@ -224,7 +265,9 @@ class DashboardApp:
             checks = queries.recent_check_results(session, monitor.id, self._recent_checks_limit)
             incidents = queries.recent_incidents(session, monitor.id)
             stats = compute_uptime_stats(checks)
-            body = render.render_monitor_detail(monitor, stats, checks, incidents)
+            body = render.render_monitor_detail(
+                monitor, stats, checks, incidents, queries.error_budget(session, monitor)
+            )
         return self._respond_html(start_response, "200 OK", body)
 
     def _api_monitor_detail(self, start_response: StartResponse, name: str) -> Iterable[bytes]:
@@ -248,6 +291,7 @@ class DashboardApp:
                 "uptime_percentage": stats.uptime_percentage,
                 "average_latency_ms": stats.average_latency_ms,
                 "latency_percentiles": _percentile_payload(stats),
+                "slo": _slo_payload(queries.error_budget(session, monitor)),
                 "recent_checks": [
                     {
                         "checked_at": check.checked_at.isoformat(),
@@ -298,6 +342,7 @@ class DashboardApp:
                         "uptime_percentage": stats.uptime_percentage,
                         "average_latency_ms": stats.average_latency_ms,
                         "latency_percentiles": _percentile_payload(stats),
+                        "slo": _slo_payload(queries.error_budget(session, monitor)),
                     }
                 )
         return self._respond_json(
@@ -378,9 +423,17 @@ class DashboardApp:
         """
         tag = _tag_param(parse_qs(query, keep_blank_values=True))
         with self._database.session() as session:
-            summary = summarize_states(
-                queries.list_monitors(session, tag=tag),
-                queries.count_open_incidents(session),
+            monitors = queries.list_monitors(session, tag=tag)
+            summary = summarize_states(monitors, queries.count_open_incidents(session))
+            # Paused monitors are left out of the budget tally for the same
+            # reason /metrics skips them entirely: nothing is checking them,
+            # so their window slides forward over a history that stopped
+            # growing and the figure decays toward no-data whatever the
+            # service is really doing.
+            budgets = summarize_budgets(
+                queries.error_budget(session, monitor)
+                for monitor in monitors
+                if not monitor.is_paused
             )
         payload = {
             "total": summary.total,
@@ -388,6 +441,12 @@ class DashboardApp:
             "paused": summary.paused,
             "tag": tag,
             "states": {state.value: count for state, count in summary.counts.items()},
+            "slo": {
+                "with_target": budgets.total,
+                "statuses": {
+                    status.value: count for status, count in budgets.counts.items()
+                },
+            },
         }
         return self._respond_json(start_response, "200 OK", payload)
 
@@ -400,12 +459,18 @@ class DashboardApp:
         """
         with self._database.session() as session:
             rows = []
+            budgets = {}
             for monitor in queries.list_monitors(session):
                 checks = queries.recent_check_results(
                     session, monitor.id, self._recent_checks_limit
                 )
                 rows.append((monitor, compute_uptime_stats(checks)))
-            body = metrics.render_metrics(rows, queries.count_open_incidents(session))
+                budget = queries.error_budget(session, monitor)
+                if budget is not None:
+                    budgets[monitor.name] = budget
+            body = metrics.render_metrics(
+                rows, queries.count_open_incidents(session), budgets=budgets
+            )
         return self._respond(
             start_response, "200 OK", body.encode("utf-8"), content_type=metrics.CONTENT_TYPE
         )

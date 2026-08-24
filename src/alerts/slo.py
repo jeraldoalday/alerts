@@ -25,7 +25,7 @@ from __future__ import annotations
 import enum
 import math
 from dataclasses import dataclass
-from typing import Optional
+from typing import Dict, Iterable, Optional
 
 # The bounds a target has to fall in to mean anything. 0 is excluded because
 # a service that is allowed to be down always has no objective; 100 is
@@ -282,3 +282,57 @@ def compute_error_budget(
         total_checks=total_checks,
         failed_checks=failed_checks,
     )
+
+
+@dataclass(frozen=True)
+class BudgetSummary:
+    """How many monitors sit in each budget status right now.
+
+    Every `BudgetStatus` is present in `counts`, zeroes included, for the
+    same reason `StateSummary` carries every state: a caller rendering a
+    fixed set of tiles shouldn't have to decide what to do about a status
+    nothing happens to be in.
+
+    `total` counts only the monitors that have an objective. Folding in the
+    ones that don't would make "2 of 40 breaching" read as reassurance about
+    38 services nobody has promised anything about.
+    """
+
+    total: int
+    counts: Dict[BudgetStatus, int]
+
+    @property
+    def breaching(self) -> int:
+        return self.counts[BudgetStatus.BREACHED]
+
+    @property
+    def at_risk(self) -> int:
+        return self.counts[BudgetStatus.AT_RISK]
+
+    @property
+    def all_met(self) -> bool:
+        """Whether every objective is currently being met.
+
+        False when nothing has an objective at all: there is no promise
+        being kept, and answering "yes, all met" about an estate that has
+        made no promises is the reading most likely to be misread.
+        """
+        return self.total > 0 and self.breaching == 0
+
+
+def summarize_budgets(budgets: Iterable[Optional[ErrorBudget]]) -> BudgetSummary:
+    """Tally a collection of budgets by status, skipping the monitors without one.
+
+    Takes `None`s in its stride so a caller can map straight over its
+    monitors without filtering first -- which is what every caller has,
+    since "has no objective" is a per-monitor fact rather than a separate
+    list.
+    """
+    counts = {status: 0 for status in BudgetStatus}
+    total = 0
+    for budget in budgets:
+        if budget is None:
+            continue
+        counts[budget.status] += 1
+        total += 1
+    return BudgetSummary(total=total, counts=counts)
