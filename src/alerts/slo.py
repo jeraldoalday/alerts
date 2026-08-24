@@ -46,6 +46,10 @@ AT_RISK_RATIO = 0.75
 
 SECONDS_PER_DAY = 86_400
 
+# Decimal places the failure ratio is rounded to, to keep binary floating
+# point noise out of every figure derived from it. See `failure_ratio`.
+_RATIO_PLACES = 12
+
 
 class BudgetStatus(str, enum.Enum):
     """Where a monitor stands against its objective.
@@ -128,8 +132,20 @@ class ErrorBudget:
         A 99.9% target has a failure ratio of 0.001. This is the number the
         whole module turns on, so it is named rather than written out at
         each of the four places that need it.
+
+        Rounded, because binary floating point cannot hold 99.9 and the
+        subtraction below magnifies the gap: the unrounded complement of
+        99.9% is 0.0010000000000000009, which turns a monthly allowance of
+        exactly 43m12s into 2591.9999999998527 seconds. The table format
+        hides that; the JSON payload and the metrics exposition do not, and
+        a status page rendering a budget nobody can reconcile with the
+        arithmetic they did on paper is worse than one showing no budget.
+
+        Twelve places is far more precision than any target carries -- the
+        tightest anyone writes is five nines -- and far less than the noise
+        it removes.
         """
-        return (MAX_TARGET - self.target_percentage) / MAX_TARGET
+        return round((MAX_TARGET - self.target_percentage) / MAX_TARGET, _RATIO_PLACES)
 
     @property
     def allowance(self) -> float:

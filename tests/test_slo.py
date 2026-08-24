@@ -87,9 +87,24 @@ def test_availability_is_the_share_of_checks_that_passed():
 
 
 def test_the_failure_ratio_is_the_complement_of_the_target():
-    assert _budget(target=99.9).failure_ratio == pytest.approx(0.001)
-    assert _budget(target=99.0).failure_ratio == pytest.approx(0.01)
+    """Exactly, not approximately -- see the rounding on `failure_ratio`.
+
+    Binary floating point cannot hold 99.9, so the raw complement is
+    0.0010000000000000009 and every figure derived from it inherits the
+    noise: a monthly allowance of exactly 43m12s renders as
+    2591.9999999998527 in the JSON payload and the metrics exposition. A
+    budget nobody can reconcile with the arithmetic they did on paper is
+    worse than no budget at all.
+    """
+    assert _budget(target=99.9).failure_ratio == 0.001
+    assert _budget(target=99.99).failure_ratio == 0.0001
+    assert _budget(target=99.0).failure_ratio == 0.01
     assert _budget(target=100.0).failure_ratio == 0.0
+
+
+def test_the_derived_durations_come_out_exact():
+    assert _budget(target=99.9, window_days=30).allowed_downtime_seconds == 2592.0
+    assert _budget(target=99.99, window_days=30).allowed_downtime_seconds == 259.2
 
 
 def test_the_allowance_is_the_failure_ratio_over_the_window_s_checks():
@@ -218,7 +233,9 @@ def test_the_window_length_does_not_move_the_availability_figure():
 
     assert short.actual_percentage == long.actual_percentage
     assert short.consumed_ratio == long.consumed_ratio
-    assert long.allowed_downtime_seconds == 90 * short.allowed_downtime_seconds
+    assert long.allowed_downtime_seconds == pytest.approx(
+        90 * short.allowed_downtime_seconds
+    )
 
 
 def test_the_default_window_is_thirty_days():
