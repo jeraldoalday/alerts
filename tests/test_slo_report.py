@@ -501,3 +501,83 @@ def test_a_paused_monitor_does_not_fail_the_gate(tmp_path, capsys):
 
     assert "paused, not in config" in capsys.readouterr().out
     assert exit_code == 0
+
+
+# --- an estate that has not been synced ------------------------------------
+
+
+def _config_with(tmp_path, monitors: str) -> tuple:
+    config_file = tmp_path / "config.yaml"
+    db_path = tmp_path / "test.db"
+    config_file.write_text(
+        f"database:\n  url: sqlite:///{db_path}\n{monitors}"
+    )
+    database = Database(f"sqlite:///{db_path}")
+    database.create_all()
+    return str(config_file), database
+
+
+_WITH_TARGET = """
+monitors:
+  - name: api
+    type: http
+    target: https://example.com
+    interval_seconds: 60
+    slo_target: 99.9
+"""
+
+_WITHOUT_TARGET = """
+monitors:
+  - name: api
+    type: http
+    target: https://example.com
+    interval_seconds: 60
+"""
+
+
+def test_an_unsynced_config_with_targets_says_so_rather_than_denying_them(
+    tmp_path, capsys
+):
+    """The config in hand declares a target, so denying it would be false.
+
+    Someone adding slo_target and running the report before restarting the
+    scheduler would otherwise be told the target doesn't exist, and would go
+    and check the line they had only just written.
+    """
+    config_path, _ = _config_with(tmp_path, _WITH_TARGET)
+
+    exit_code = cli.main(["slo", "--config", config_path])
+
+    output = capsys.readouterr().out
+    assert "No monitors in the database yet" in output
+    assert "Run `alerts run`" in output
+    assert exit_code == 0
+
+
+def test_an_unsynced_config_without_targets_gets_the_ordinary_message(
+    tmp_path, capsys
+):
+    """Nothing has been promised, which is what the empty table already says."""
+    config_path, _ = _config_with(tmp_path, _WITHOUT_TARGET)
+
+    cli.main(["slo", "--config", config_path])
+
+    assert "No monitors have an SLO target." in capsys.readouterr().out
+
+
+def test_a_synced_estate_with_no_targets_gets_the_ordinary_message(tmp_path, capsys):
+    """The database has been synced, so there is nothing to explain."""
+    config_path, database = _config_with(tmp_path, _WITH_TARGET)
+    with database.session() as session:
+        _monitor(session, "api", slo_target=None)
+
+    cli.main(["slo", "--config", config_path])
+
+    assert "No monitors have an SLO target." in capsys.readouterr().out
+
+
+def test_the_unsynced_message_does_not_fail_the_gate(tmp_path, capsys):
+    """Nothing has been measured, which is not a missed target."""
+    config_path, _ = _config_with(tmp_path, _WITH_TARGET)
+
+    assert cli.main(["slo", "--config", config_path, "--exit-code"]) == 0

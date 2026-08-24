@@ -29,6 +29,16 @@ def list_monitors(session: Session, *, tag: Optional[str] = None) -> Sequence[Mo
     return [monitor for monitor in monitors if monitor.has_tag(tag)]
 
 
+def count_monitors(session: Session) -> int:
+    """How many monitors the database holds, paused ones included.
+
+    Distinguishes an install whose config has never been synced from one
+    whose monitors simply have nothing to report: the two produce the same
+    empty report, and only one of them is a problem the operator can fix.
+    """
+    return session.query(Monitor).count()
+
+
 def known_tags(session: Session) -> List[str]:
     """Every tag any monitor carries, sorted, without repeats.
 

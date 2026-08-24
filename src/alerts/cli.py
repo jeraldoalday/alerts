@@ -30,6 +30,7 @@ from alerts.reporting import (
 )
 from alerts.retention import prune
 from alerts.scheduler import Scheduler, sync_monitors
+from alerts.web.queries import count_monitors
 from alerts.web.server import serve
 
 logger = logging.getLogger(__name__)
@@ -320,6 +321,20 @@ def _slo(
 
     with database.session() as session:
         rows = collect_slo_rows(session, monitor=monitor, tag=tag)
+        known_monitors = count_monitors(session)
+
+    if not rows and known_monitors == 0 and any(m.slo_target for m in config.monitors):
+        # The config declares targets and the database has never seen a
+        # monitor, so this is an estate that hasn't been synced rather than
+        # one with nothing to report. "No monitors have an SLO target" is a
+        # flatly false thing to say about the file that was just read, and
+        # it points at the wrong fix -- someone would go and check the
+        # target they had only just written.
+        print(
+            f"No monitors in the database yet, though {config_path} declares "
+            "SLO targets. Run `alerts run` to sync the config."
+        )
+        return 0
 
     if (monitor is not None or tag is not None) and not rows:
         # Distinguished from "nothing has an objective", which is what the
