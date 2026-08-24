@@ -1,10 +1,11 @@
 """Plain-text tables for the reporting subcommands.
 
-One module per table would be four modules that all render aligned columns
+One module per table would be five modules that all render aligned columns
 the same way, so they live together: `alerts status` (what is the state of
 everything now), `alerts incidents` (what has been breaking), `alerts
-maintenance` (what is planned), and `alerts check` (what does this config
-actually do right now).
+maintenance` (what is planned), `alerts check` (what does this config
+actually do right now), and `alerts slo` (what has been promised, and how
+much of the budget is left).
 
 The dashboard answers the first of those too, but it needs a running process
 and a browser. These render the same pictures to stdout so they work over
@@ -26,6 +27,7 @@ from alerts.config import MaintenanceWindowConfig
 from alerts.maintenance import active_occurrence, describe_schedule, next_occurrence
 from alerts.models import Incident, IncidentState, MonitorState
 from alerts.probe import ProbeResult
+from alerts.slo import BudgetStatus, ErrorBudget
 from alerts.timeutil import as_utc_naive, utcnow
 from alerts.web import queries
 from alerts.web.stats import compute_uptime_stats
@@ -44,6 +46,17 @@ _COLUMNS = (
 _MAINTENANCE_COLUMNS = ("WINDOW", "SCHEDULE", "MONITORS", "STATUS")
 _INCIDENT_COLUMNS = ("MONITOR", "STARTED", "DURATION", "STATE", "CAUSE")
 _PROBE_COLUMNS = ("MONITOR", "TYPE", "TARGET", "RESULT", "LATENCY", "DETAIL")
+_SLO_COLUMNS = (
+    "MONITOR",
+    "TAGS",
+    "TARGET",
+    "WINDOW",
+    "ACTUAL",
+    "CHECKS",
+    "BUDGET",
+    "STATUS",
+    "NOTE",
+)
 
 # `alerts status` shows a monitor's tags so an unfiltered table can still be
 # read by group. The probe table doesn't: it is already showing the target,
@@ -550,3 +563,183 @@ def format_probe_summary(rows: Sequence[ProbeRow]) -> str:
         parts.append(f"{slow} slow")
     parts.append(f"{failed} failed")
     return ", ".join(parts)
+
+
+# How each budget status is spelled in the table. The two that need acting
+# on are in capitals, following the probe table's convention: the point of a
+# status column on a long report is that the rows worth reading can be found
+# without reading the rest.
+_SLO_STATUS_WORDS = {
+    BudgetStatus.OK: "ok",
+    BudgetStatus.AT_RISK: "AT RISK",
+    BudgetStatus.BREACHED: "BREACHED",
+    BudgetStatus.NO_DATA: "no data",
+}
+
+
+@dataclass(frozen=True)
+class SloRow:
+    """One monitor's line in the `alerts slo` table."""
+
+    name: str
+    budget: ErrorBudget
+    tags: Sequence[str] = ()
+    paused: bool = False
+
+    @property
+    def status(self) -> BudgetStatus:
+        return self.budget.status
+
+    @property
+    def is_breaching(self) -> bool:
+        """Whether this row should fail `alerts slo --exit-code`.
+
+        A paused monitor is excluded however bad its figures look, matching
+        `StatusRow.is_down`. Nothing is checking it, so its window is
+        sliding forward over a history that stopped growing: the measured
+        availability decays toward "no data" whatever the service is
+        actually doing, and failing a scripted check on that would send
+        someone after an outage nobody is observing.
+        """
+        return self.budget.is_breaching and not self.paused
+
+
+def collect_slo_rows(
+    session: Session,
+    *,
+    monitor: Optional[str] = None,
+    tag: Optional[str] = None,
+    now: Optional[datetime] = None,
+) -> List[SloRow]:
+    """Build one row per monitor carrying an availability objective.
+
+    Monitors without a target are left out entirely rather than listed with
+    empty columns. `alerts status` already lists every monitor; this report
+    answers a narrower question, and padding it with rows that have nothing
+    to say about that question makes the ones that do harder to find.
+
+    `monitor` and `tag` narrow it the way they do everywhere else, and both
+    narrow rather than override.
+    """
+    moment = now or utcnow()
+    rows: List[SloRow] = []
+    for found in queries.list_monitors(session, tag=tag):
+        if monitor is not None and found.name != monitor:
+            continue
+        budget = queries.error_budget(session, found, now=moment)
+        if budget is None:
+            continue
+        rows.append(
+            SloRow(
+                name=found.name,
+                budget=budget,
+                tags=tuple(found.tags or ()),
+                paused=found.is_paused,
+            )
+        )
+    return rows
+
+
+def _percentage(value: Optional[float], places: int = 2) -> str:
+    """A percentage at SLO precision, or a dash for nothing measured.
+
+    Two decimal places rather than the status table's one: the whole
+    vocabulary of availability targets lives in the decimals, and a report
+    rounding 99.94% and 99.95% to the same "99.9%" cannot show a 99.95%
+    target being missed.
+    """
+    return "-" if value is None else f"{value:.{places}f}%"
+
+
+def _budget_cell(budget: ErrorBudget) -> str:
+    """How much of the budget is left, as a percentage of the allowance.
+
+    "spent" rather than "0% left" once it has been overrun, because those
+    are different situations: one is a budget about to be exceeded and the
+    other is one that already has been, and the STATUS column beside it is
+    the place that says which.
+    """
+    remaining = budget.remaining_ratio
+    if remaining is None:
+        return "-"
+    if remaining <= 0:
+        return "spent"
+    return f"{remaining * 100:.0f}% left"
+
+
+def _slo_note(row: SloRow) -> str:
+    """The budget in minutes, which is the unit an SLO gets discussed in.
+
+    The columns to the left are the measurement -- checks, and the ratio
+    between them. This is the translation: "18m of 43m left" is the sentence
+    someone repeats in a planning meeting, and asking them to derive it from
+    a check count and an interval they would have to go and look up is how a
+    report goes unread.
+    """
+    if row.paused:
+        return "paused, not in config"
+    remaining = row.budget.remaining_downtime_seconds
+    if remaining is None:
+        return ""
+    allowed = format_duration(row.budget.allowed_downtime_seconds)
+    return f"{format_duration(remaining)} of {allowed} left"
+
+
+def _slo_cells(row: SloRow) -> List[str]:
+    budget = row.budget
+    return [
+        row.name,
+        ",".join(row.tags),
+        _percentage(budget.target_percentage),
+        f"{budget.window_days}d",
+        _percentage(budget.actual_percentage),
+        str(budget.total_checks),
+        _budget_cell(budget),
+        _SLO_STATUS_WORDS[row.status],
+        _slo_note(row),
+    ]
+
+
+def format_slo_table(rows: Sequence[SloRow]) -> str:
+    """Render error budgets as an aligned plain-text table."""
+    if not rows:
+        return "No monitors have an SLO target."
+
+    table = [list(_SLO_COLUMNS)] + [_slo_cells(row) for row in rows]
+    widths = [max(len(line[column]) for line in table) for column in range(len(_SLO_COLUMNS))]
+    return "\n".join(
+        "  ".join(cell.ljust(width) for cell, width in zip(line, widths)).rstrip()
+        for line in table
+    )
+
+
+def format_slo_summary(rows: Sequence[SloRow]) -> str:
+    """One-line tally of how the estate stands against what it promised.
+
+    Paused monitors are counted on their own and left out of the status
+    tally, for the same reason they don't fail `--exit-code`: their window
+    is measuring a history that stopped growing.
+    """
+    if not rows:
+        return "0 monitor(s) with an objective"
+
+    counts = {status: 0 for status in BudgetStatus}
+    paused = 0
+    for row in rows:
+        if row.paused:
+            paused += 1
+            continue
+        counts[row.status] += 1
+    parts = [
+        f"{counts[status]} {_SLO_STATUS_WORDS[status].lower()}"
+        for status in BudgetStatus
+        if counts[status]
+    ]
+    if paused:
+        parts.append(f"{paused} paused")
+    tally = ", ".join(parts)
+    return (
+        f"{len(rows)} monitor(s) with an objective: {tally}"
+        if tally
+        else f"{len(rows)} monitor(s) with an objective"
+    )

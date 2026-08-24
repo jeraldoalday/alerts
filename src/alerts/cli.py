@@ -1,4 +1,4 @@
-"""Command-line entrypoint: `alerts run|serve|check|status|incidents|maintenance|prune`."""
+"""Command-line entrypoint: `alerts run|serve|check|status|slo|incidents|maintenance|prune`."""
 from __future__ import annotations
 
 import argparse
@@ -15,6 +15,7 @@ from alerts.reporting import (
     collect_incident_rows,
     collect_maintenance_rows,
     collect_probe_rows,
+    collect_slo_rows,
     collect_status_rows,
     format_incident_summary,
     format_incident_table,
@@ -22,6 +23,8 @@ from alerts.reporting import (
     format_maintenance_table,
     format_probe_summary,
     format_probe_table,
+    format_slo_summary,
+    format_slo_table,
     format_status_summary,
     format_status_table,
 )
@@ -112,6 +115,18 @@ def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         "--exit-code",
         action="store_true",
         help="Exit 1 if any monitor is down, for use as a scripted check.",
+    )
+
+    slo_parser = subparsers.add_parser(
+        "slo", help="Report each monitor's availability against its SLO target."
+    )
+    slo_parser.add_argument("--config", default="config.yaml", help="Path to config.yaml")
+    slo_parser.add_argument("--monitor", help="Only this monitor.")
+    slo_parser.add_argument("--tag", help="Only monitors carrying this tag.")
+    slo_parser.add_argument(
+        "--exit-code",
+        action="store_true",
+        help="Exit 1 if any monitor is missing its target, for gating a release.",
     )
 
     incidents_parser = subparsers.add_parser(
@@ -282,6 +297,49 @@ def _status(
     return 1 if use_exit_code and any(row.is_down for row in rows) else 0
 
 
+def _slo(
+    config_path: str, monitor: Optional[str], tag: Optional[str], use_exit_code: bool
+) -> int:
+    """Print the error budget table, returning the process exit code.
+
+    `alerts status` answers what is broken now and `alerts incidents` what
+    has been breaking; this answers whether what has been breaking is more
+    than was promised, which is the question that decides whether the next
+    risky change ships.
+
+    Each monitor is measured over its own `slo_window_days`, out of the same
+    database the scheduler writes to, so it can be run alongside a live
+    `alerts run`. `--exit-code` is what makes it usable as a release gate:
+    it fails when a monitor has already missed its target, not when the
+    budget is merely running low, because an at-risk service is exactly the
+    one a deploy might be needed to fix.
+    """
+    config = load_config(config_path)
+    database = Database(config.database.url)
+    database.create_all()
+
+    with database.session() as session:
+        rows = collect_slo_rows(session, monitor=monitor, tag=tag)
+
+    if (monitor is not None or tag is not None) and not rows:
+        # Distinguished from "nothing has an objective", which is what the
+        # empty table would otherwise say about a filter that matched
+        # nothing -- and failed under --exit-code for the same reason
+        # `alerts check` fails on one: a gate that passes because a name was
+        # mistyped is the one way it could fail unnoticed.
+        print(
+            f"No monitor {_describe_selection(monitor, tag)} has an SLO target "
+            f"in {config_path}."
+        )
+        return 1 if use_exit_code else 0
+
+    print(format_slo_table(rows))
+    print()
+    print(format_slo_summary(rows))
+
+    return 1 if use_exit_code and any(row.is_breaching for row in rows) else 0
+
+
 def _incidents(
     config_path: str,
     *,
@@ -407,6 +465,10 @@ def main(argv: Optional[List[str]] = None) -> int:
             checks_window=args.checks,
             tag=args.tag,
             use_exit_code=args.exit_code,
+        )
+    elif args.command == "slo":
+        return _slo(
+            args.config, monitor=args.monitor, tag=args.tag, use_exit_code=args.exit_code
         )
     elif args.command == "incidents":
         return _incidents(
