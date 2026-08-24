@@ -16,7 +16,7 @@ from alerts.timeutil import utcnow
 from alerts.web import queries, render
 from alerts.web.app import DashboardApp
 from alerts.web.metrics import parse_sample, render_metrics
-from alerts.web.stats import UptimeStats
+from alerts.web.stats import UptimeStats, summarize_states
 
 NOW = utcnow().replace(tzinfo=None)
 
@@ -421,3 +421,70 @@ def test_the_index_page_and_the_report_agree_about_the_status(db):
 
     assert row.status is BudgetStatus.BREACHED
     assert "spent" in html
+
+
+# --- the summary tiles -----------------------------------------------------
+
+
+def test_the_tiles_show_a_breached_count_whenever_anything_has_a_target():
+    """Zero breached is the answer someone came to the page for."""
+    monitor = _monitor()
+    html = render.render_index(
+        [(monitor, _NO_STATS, None)],
+        summarize_states([monitor]),
+        budgets={"api": _budget(total=1000, failed=0)},
+    )
+
+    assert "slo breached" in html
+
+
+def test_the_tiles_omit_the_slo_counts_when_nothing_has_a_target():
+    """No reassuring zeroes about promises nobody made."""
+    monitor = _monitor(slo_target=None)
+    html = render.render_index([(monitor, _NO_STATS, None)], summarize_states([monitor]))
+
+    assert "slo breached" not in html
+    assert "slo at risk" not in html
+
+
+def test_the_at_risk_tile_appears_only_when_it_is_non_zero():
+    """The rule the degraded tile already follows: room left is not news."""
+    monitor = _monitor()
+    healthy = render.render_index(
+        [(monitor, _NO_STATS, None)],
+        summarize_states([monitor]),
+        budgets={"api": _budget(total=1000, failed=0)},
+    )
+    burning = render.render_index(
+        [(monitor, _NO_STATS, None)],
+        summarize_states([monitor]),
+        budgets={"api": _budget(total=1000, failed=8)},
+    )
+
+    assert "slo at risk" not in healthy
+    assert "slo at risk" in burning
+
+
+def test_a_paused_monitor_is_left_out_of_the_tile_counts(db):
+    """Matching /api/summary and /metrics -- its window stopped growing."""
+    monitor = _monitor(enabled=False)
+    html = render.render_index(
+        [(monitor, _NO_STATS, None)],
+        summarize_states([monitor]),
+        budgets={"api": _budget(total=1000, failed=500)},
+    )
+
+    assert "slo breached" not in html
+
+
+def test_the_breached_tile_counts_the_breaching_monitors(db):
+    with db.session() as session:
+        healthy = _monitor(session, "healthy")
+        breaching = _monitor(session, "breaching")
+        _checks(session, healthy.id, total=1000, failed=0)
+        _checks(session, breaching.id, total=1000, failed=100)
+
+    _, html = _call(DashboardApp(db), "/")
+
+    assert "slo breached" in html
+    assert '<span class="count" style="color:#cf222e">1</span>' in html

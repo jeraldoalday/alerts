@@ -221,7 +221,8 @@ The dashboard listens on `dashboard.host:dashboard.port` from the config
 
 - `/` — all monitors, current state, uptime %, average latency, and each
   monitor's SLO standing. `?tag=` narrows it to one group, and the summary
-  tiles count the filtered set
+  tiles — including how many objectives are at risk or breached — count the
+  filtered set
 - `/monitors/<name>` — one monitor's recent checks and incident history
 - `/api/monitors` — JSON summary of all monitors; `?tag=` narrows it and the
   response echoes the tag it filtered on

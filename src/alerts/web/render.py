@@ -12,7 +12,7 @@ from typing import List, Mapping, Optional, Sequence, Tuple
 from urllib.parse import quote
 
 from alerts.models import CheckResult, Incident, IncidentState, Monitor, MonitorState
-from alerts.slo import BudgetStatus, ErrorBudget
+from alerts.slo import BudgetStatus, BudgetSummary, ErrorBudget, summarize_budgets
 from alerts.web.stats import StateSummary, UptimeStats
 
 _STATE_COLORS = {
@@ -261,12 +261,21 @@ def _summary_tile(label: str, count: int, color: Optional[str] = None) -> str:
     )
 
 
-def render_summary(summary: StateSummary) -> str:
+def render_summary(
+    summary: StateSummary, budgets: Optional[BudgetSummary] = None
+) -> str:
     """A row of at-a-glance tiles: one per monitor state, plus open incidents.
 
     Rendered even when every monitor is up -- an operator opening the
     dashboard mid-incident shouldn't have to count table rows to find out how
     much is broken, and "0 down" is itself the reassurance they came for.
+
+    The SLO tiles follow the same two rules the state tiles do. "breached" is
+    shown whenever anything has an objective at all, because a zero there is
+    the answer someone came to the page for; "at risk" appears only when it
+    is non-zero, the way "degraded" does, since a budget with room left in it
+    is not news. An estate that has promised nothing gets neither, rather
+    than a reassuring pair of zeroes about promises nobody made.
     """
     tiles = [_summary_tile("monitors", summary.total)]
     tiles += [
@@ -281,6 +290,18 @@ def render_summary(summary: StateSummary) -> str:
     tiles.append(
         _summary_tile("open incidents", summary.open_incidents, _STATE_COLORS[MonitorState.DOWN])
     )
+    if budgets is not None and budgets.total:
+        if budgets.at_risk:
+            tiles.append(
+                _summary_tile(
+                    "slo at risk", budgets.at_risk, _BUDGET_COLORS[BudgetStatus.AT_RISK]
+                )
+            )
+        tiles.append(
+            _summary_tile(
+                "slo breached", budgets.breaching, _BUDGET_COLORS[BudgetStatus.BREACHED]
+            )
+        )
     if summary.paused:
         tiles.append(_summary_tile("paused", summary.paused))
     return f'<ul class="summary">{"".join(tiles)}</ul>'
@@ -336,7 +357,15 @@ def render_index(
         f"<tbody>{''.join(body_rows) or empty_row}</tbody>"
         "</table>"
     )
-    summary_html = render_summary(summary) if summary is not None else ""
+    # Paused monitors are left out of the budget tally, matching /api/summary
+    # and /metrics: nothing is checking them, so their window slides forward
+    # over a history that stopped growing.
+    budget_summary = summarize_budgets(
+        budgets.get(monitor.name) for monitor, _, _ in rows if not monitor.is_paused
+    )
+    summary_html = (
+        render_summary(summary, budget_summary) if summary is not None else ""
+    )
     filter_html = render_tag_filter(tags, active_tag)
     heading = "Monitors" if active_tag is None else f"Monitors: {escape(active_tag)}"
     return _page(
