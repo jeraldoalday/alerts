@@ -239,12 +239,7 @@ class DashboardApp:
                 stats = compute_uptime_stats(checks)
                 last_checked_at = checks[0].checked_at if checks else None
                 rows.append((monitor, stats, last_checked_at))
-            budgets = {
-                monitor.name: budget
-                for monitor in monitors
-                for budget in [queries.error_budget(session, monitor)]
-                if budget is not None
-            }
+            budgets = queries.error_budgets(session, monitors)
             summary = summarize_states(monitors, queries.count_open_incidents(session))
             body = render.render_index(
                 rows,
@@ -458,18 +453,22 @@ class DashboardApp:
         monitor's uptime is.
         """
         with self._database.session() as session:
-            rows = []
-            budgets = {}
-            for monitor in queries.list_monitors(session):
-                checks = queries.recent_check_results(
-                    session, monitor.id, self._recent_checks_limit
+            monitors = queries.list_monitors(session)
+            rows = [
+                (
+                    monitor,
+                    compute_uptime_stats(
+                        queries.recent_check_results(
+                            session, monitor.id, self._recent_checks_limit
+                        )
+                    ),
                 )
-                rows.append((monitor, compute_uptime_stats(checks)))
-                budget = queries.error_budget(session, monitor)
-                if budget is not None:
-                    budgets[monitor.name] = budget
+                for monitor in monitors
+            ]
             body = metrics.render_metrics(
-                rows, queries.count_open_incidents(session), budgets=budgets
+                rows,
+                queries.count_open_incidents(session),
+                budgets=queries.error_budgets(session, monitors),
             )
         return self._respond(
             start_response, "200 OK", body.encode("utf-8"), content_type=metrics.CONTENT_TYPE

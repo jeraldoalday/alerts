@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import List, Optional, Sequence
+from typing import Dict, Iterable, List, Optional, Sequence
 
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
@@ -184,3 +184,26 @@ def error_budget(
         failed_checks=tally.failed,
         window_days=monitor.slo_window_days,
     )
+
+
+def error_budgets(
+    session: Session, monitors: Iterable[Monitor], *, now: Optional[datetime] = None
+) -> Dict[str, ErrorBudget]:
+    """Budgets for a set of monitors, keyed by name, skipping those without one.
+
+    A mapping rather than a list aligned with the monitors, because that is
+    the shape both consumers want: the index table and the metrics
+    exposition each walk their own rows and look a budget up per monitor,
+    and a monitor with no objective is simply absent -- an em dash on the
+    page, no `_slo_` series in the exposition.
+
+    Names are the key because they are unique by database constraint and are
+    what a rendering already has in hand; the id would mean every caller
+    carrying a second lookup table to get back to it.
+    """
+    budgets: Dict[str, ErrorBudget] = {}
+    for monitor in monitors:
+        budget = error_budget(session, monitor, now=now)
+        if budget is not None:
+            budgets[monitor.name] = budget
+    return budgets
