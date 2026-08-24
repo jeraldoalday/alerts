@@ -30,6 +30,7 @@ Early development. Current state:
 - [x] `alerts incidents` and `/api/incidents` for incident history and MTTR
 - [x] `alerts check` for probing the configured targets on demand
 - [x] Tags for grouping monitors, and filtering every report by one
+- [x] Uptime SLO targets, error budgets, and `alerts slo`
 
 See open issues and commit history for day-to-day progress.
 
@@ -147,6 +148,37 @@ is reported however old it is, even when it started before the window --
 losing the one outage that is still happening is the one thing a report of
 outages must not do.
 
+Report each monitor against the availability it was promised to hold, and
+how much of its error budget is left:
+
+```bash
+alerts slo --config config.yaml
+```
+
+```
+MONITOR      TAGS      TARGET  WINDOW  ACTUAL  CHECKS  BUDGET    STATUS    NOTE
+api-gateway  prod,api  99.95%  7d      99.21%  40320   spent     BREACHED  0s of 5m left
+legacy-db    prod      99.00%  30d     99.40%  86400   40% left  ok        2h 52m of 7h 12m left
+main-site    prod,web  99.90%  30d     99.93%  86400   28% left  ok        12m of 43m left
+
+3 monitor(s) with an objective: 2 ok, 1 breached
+```
+
+`--monitor NAME` and `--tag NAME` narrow it, and both narrow rather than
+override. `--exit-code` exits 1 when a monitor has already *missed* its
+target -- not when the budget is merely running low, since an at-risk service
+is exactly the one a deploy might be needed to fix, and a gate that blocked
+the fix would be working against you.
+
+Monitors with no `slo_target` are left out rather than listed with empty
+columns; `alerts status` already lists everything. A paused monitor is shown
+and marked, but never fails the gate: nothing is checking it, so its window
+slides forward over a history that stopped growing and the figure decays
+toward "no data" whatever the service is really doing.
+
+See [SLO targets and error budgets](#slo-targets-and-error-budgets) for what
+the numbers mean.
+
 Delete check and incident history that has aged past the `retention` policy.
 There's no automatic pruning -- it's a bulk write against the database the
 scheduler is using, so run it from cron when it suits you:
@@ -187,16 +219,18 @@ alerts serve --config config.yaml
 The dashboard listens on `dashboard.host:dashboard.port` from the config
 (default `127.0.0.1:8080`) and serves:
 
-- `/` — all monitors, current state, uptime %, and average latency. `?tag=`
-  narrows it to one group, and the summary tiles count the filtered set
+- `/` — all monitors, current state, uptime %, average latency, and each
+  monitor's SLO standing. `?tag=` narrows it to one group, and the summary
+  tiles count the filtered set
 - `/monitors/<name>` — one monitor's recent checks and incident history
 - `/api/monitors` — JSON summary of all monitors; `?tag=` narrows it and the
   response echoes the tag it filtered on
 - `/api/monitors/<name>` — JSON detail for one monitor, including recent
-  checks and incidents
-- `/api/summary` — JSON state tally and open-incident count; a constant-size
-  response whatever the monitor count, for a wallboard or a polling check.
-  `?tag=` narrows the state counts to one group
+  checks, incidents, and its `slo` object
+- `/api/summary` — JSON state tally, open-incident count, and an `slo` tally
+  of how many objectives are being met; a constant-size response whatever
+  the monitor count, for a wallboard or a polling check. `?tag=` narrows the
+  state counts to one group
 - `/api/incidents` — JSON incident feed across every monitor, the counterpart
   of `alerts incidents`. Takes `?monitor=`, `?open`, `?days=`, and `?limit=`,
   and gives each incident a server-computed `duration_seconds` so no consumer
@@ -271,6 +305,64 @@ actually recorded rather than an interpolation between two that never
 happened. p95 is also the figure a `degraded_latency_ms` budget is best set
 against.
 
+## SLO targets and error budgets
+
+A monitor can be given an availability target and a rolling window to hold
+it over:
+
+```yaml
+monitors:
+  - name: api-gateway
+    type: http
+    target: https://api.example.com/healthz
+    slo_target: 99.9        # percent
+    slo_window_days: 30     # the default
+```
+
+Like tags, a target changes nothing about how the monitor is checked or
+alerted. What it adds is a number to measure against, and the useful part of
+that number is the *budget* it implies: 0.1% of 30 days is 43 minutes of
+downtime you are allowed to spend, and knowing how much of it is left is
+what turns "we had an outage" into a decision about shipping the next risky
+change.
+
+Availability is measured in checks, not in seconds. The scheduler records
+one row per check, and a check is the only direct evidence this tool has
+that a service was serving. Every duration reported alongside — "31m of 43m
+left" — is derived from those counts by taking each check to speak for an
+equal share of the window, which over-reports an outage caught by a single
+check on a long interval and under-reports one that ended just after a check
+passed. The counts are the measurement; the minutes are the translation, and
+they sit next to each other for exactly that reason.
+
+A monitor is `ok`, `at-risk` once three quarters of its budget is gone,
+`breached` once its measured availability has fallen below the target, and
+`no-data` while its window is empty. That last one is its own status rather
+than an optimistic `ok`: a monitor that has never been checked hasn't met
+its objective, it has failed to produce evidence either way.
+
+Two things are refused at load time rather than left to look configured:
+
+- `slo_window_days` without an `slo_target`, since nothing else reads the
+  window
+- a target the window cannot afford one failed check of. A window holds
+  roughly `window_days * 86400 / interval_seconds` checks and a target
+  affords `1 - target/100` of them, so a tight target over a short window at
+  a slow interval can afford less than a single failure. Every monitor gets
+  one eventually, and when it arrives the objective is breached for the rest
+  of the window with no way to earn it back — an arithmetic accident rather
+  than an objective anyone chose, and invisible until the first failure. The
+  error names the three knobs that fix it.
+
+An exact `slo_target: 100` is exempt from that second rule. It affords
+nothing at any window or interval by definition, and someone typing it is
+deliberately saying every failure counts.
+
+The same figures appear on the dashboard's SLO column and Objective block,
+in `slo` objects on both `/api/monitors` routes, as a tally in
+`/api/summary`, and in `/metrics` — all computed from one place, so they
+cannot disagree.
+
 ## Metrics
 
 `/metrics` serves the current state in the Prometheus text format, built
@@ -288,6 +380,11 @@ dashboard never disagree:
 | `alerts_monitor_checks{monitor,type}` | How many checks those two figures cover |
 | `alerts_monitor_latency_budget_ms{monitor,type}` | The monitor's `degraded_latency_ms`, if set |
 | `alerts_monitor_tag{monitor,type,tag}` | 1 for each tag a monitor carries, for joining on |
+| `alerts_monitor_slo_target_ratio{monitor,type}` | The monitor's `slo_target`, as a 0-1 ratio |
+| `alerts_monitor_slo_window_days{monitor,type}` | Length of the window that target is measured over |
+| `alerts_monitor_slo_availability_ratio{monitor,type}` | Measured availability over that window |
+| `alerts_monitor_slo_budget_consumed_ratio{monitor,type}` | Fraction of the error budget spent; above 1 means the target is missed |
+| `alerts_monitor_slo_status{monitor,type,status}` | 1 for the SLO status a monitor is in, 0 for the others |
 
 The quantile label carries the 0-1 fraction other exporters use
 (`quantile="0.95"`), so a dashboard panel written against one of them works
@@ -299,6 +396,13 @@ The state gauge is exported once per state so an alert rule can be written
 as `alerts_monitor_state{state="down"} == 1` without knowing any numeric
 encoding. Paused monitors (below) are left out entirely — a scraper can't
 tell a frozen reading from a live one.
+
+`alerts_monitor_slo_budget_consumed_ratio` is exported unclipped, so
+`> 1` is the whole alert rule for a missed objective. A monitor with no
+`slo_target` exports none of the `_slo_` series at all, and one whose window
+is still empty exports its target and window but nothing measured — a
+scraper can't tell an absent series from a real reading of zero, and zero
+availability is the loudest thing this exposition can say.
 
 ## Maintenance windows
 
@@ -414,11 +518,12 @@ src/alerts/
   maintenance.py  # Maintenance window schedules and whether one is active
   envsubst.py     # ${VAR} expansion for config values with a secret inside
   probe.py        # One-shot checks of the configured monitors, writing nothing
-  reporting.py    # Plain-text tables for `status`, `check`, `incidents`, `maintenance`
+  reporting.py    # Plain-text tables for `status`, `check`, `slo`, `incidents`, `maintenance`
+  slo.py          # Error budget arithmetic for availability targets
   retention.py    # Deletes history past the configured retention window
   timeutil.py     # Shared UTC helpers (everything stored is UTC, naive on read)
-  cli.py          # `alerts run` / `serve` / `check` / `status` / `incidents` /
-                  #   `maintenance` / `prune`
+  cli.py          # `alerts run` / `serve` / `check` / `status` / `slo` /
+                  #   `incidents` / `maintenance` / `prune`
 migrations/       # Alembic migrations
 tests/
 ```

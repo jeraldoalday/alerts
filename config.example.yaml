@@ -76,6 +76,18 @@ monitors:
     # estate to the part you are responsible for. Folded to lowercase; no
     # commas or spaces.
     tags: [prod, web]
+    # The availability this monitor is expected to hold, as a percentage,
+    # over a rolling window of slo_window_days (30 by default). Nothing is
+    # scheduled, alerted, or escalated differently because of it -- it is a
+    # promise to measure against, reported by `alerts slo`, the dashboard's
+    # SLO column, /api/monitors, and /metrics.
+    #
+    # 99.9% over 30 days is 43 minutes of downtime you are allowed to spend.
+    # A target the window is too short to afford a single failed check of is
+    # refused at load time, since the first blip would breach it for the
+    # rest of the window with no way to earn it back.
+    slo_target: 99.9
+    slo_window_days: 30
     channels: [ops-slack, ops-email]
 
   - name: api-gateway
@@ -91,6 +103,10 @@ monitors:
       Authorization: "Bearer ${API_TOKEN}"
       Accept: application/json
     tags: [prod, api, payments]
+    # A tighter promise over a shorter window, for a service whose outages
+    # are noticed within the hour rather than at the end of the month.
+    slo_target: 99.95
+    slo_window_days: 7
     channels: [ops-slack]
 
   - name: dashboard-itself
