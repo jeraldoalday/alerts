@@ -18,6 +18,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from alerts.envsubst import expand as expand_env
 from alerts.envsubst import expand_mapping as expand_env_mapping
 from alerts.envsubst import missing as missing_env_vars
+from alerts.slo import DEFAULT_WINDOW_DAYS, MAX_TARGET, MIN_TARGET, SECONDS_PER_DAY
 from alerts.tags import forbidden_characters, normalise_all
 from alerts.tags import normalise as normalise_tag
 
@@ -175,6 +176,13 @@ class MonitorConfig(BaseModel):
     method: str = "GET"
     headers: Dict[str, str] = Field(default_factory=dict)
     channels: List[str] = Field(default_factory=list)
+    # The availability this monitor is expected to hold over a rolling
+    # window, as a percentage, and the length of that window in days. A
+    # target changes nothing about how the monitor is checked or alerted --
+    # it is a promise to measure against, reported by `alerts slo`, the
+    # dashboard, and `/metrics`.
+    slo_target: Optional[float] = Field(default=None, gt=MIN_TARGET, le=MAX_TARGET)
+    slo_window_days: int = Field(default=DEFAULT_WINDOW_DAYS, ge=1, le=365)
     # Free-form labels for grouping: `prod`, `payments`, `eu-west-1`. They
     # carry no behaviour of their own -- nothing schedules, alerts, or
     # escalates differently because of a tag -- they exist so a report can be
@@ -270,6 +278,56 @@ class MonitorConfig(BaseModel):
             raise ValueError(
                 f"monitor {self.name!r} sets expected_body_contains but is a "
                 f"{self.type!r} monitor, which never reads a response body"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def slo_window_needs_a_target_to_measure(self) -> "MonitorConfig":
+        """Reject an SLO window on a monitor that has no objective.
+
+        The window is only ever read as the span an error budget is computed
+        over, so setting one without a target does nothing at all. Left
+        alone it reads as a configured SLO, which is the failure mode this
+        project keeps refusing: a promise that looks measured and isn't.
+        """
+        if self.slo_target is None and "slo_window_days" in self.model_fields_set:
+            raise ValueError(
+                f"monitor {self.name!r} sets slo_window_days but no slo_target, "
+                "so there is no objective for the window to be measured against"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def slo_window_can_afford_one_failed_check(self) -> "MonitorConfig":
+        """Reject a target the window is too short to ever satisfy in practice.
+
+        An error budget is spent in whole checks. A window holds roughly
+        `window_days * 86400 / interval_seconds` of them, and a target
+        affords `1 - target/100` of that many failures -- so a tight target
+        over a short window at a slow interval can afford less than a single
+        failed check. Every monitor gets a failed check eventually (a
+        redeploy, a DNS blip, a timeout on a busy afternoon), and when that
+        one arrives the objective is breached for the rest of the window
+        with no way to earn it back.
+
+        That is not an objective anyone chose; it is an arithmetic accident,
+        and it is invisible until the first failure. Refusing it at load
+        time names the three knobs that fix it, which is what an operator
+        would otherwise have to derive.
+        """
+        if self.slo_target is None:
+            return self
+        checks_in_window = (
+            self.slo_window_days * SECONDS_PER_DAY
+        ) / self.interval_seconds
+        affordable = checks_in_window * (MAX_TARGET - self.slo_target) / MAX_TARGET
+        if affordable < 1:
+            raise ValueError(
+                f"monitor {self.name!r} sets slo_target={self.slo_target} over "
+                f"{self.slo_window_days} day(s) at a {self.interval_seconds}s "
+                f"interval, which affords {affordable:.2f} failed checks -- a "
+                "single failure would breach it for the whole window. Lengthen "
+                "slo_window_days, lower slo_target, or shorten interval_seconds"
             )
         return self
 
