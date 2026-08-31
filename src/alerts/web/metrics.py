@@ -98,6 +98,7 @@ def render_metrics(
     rows: Iterable[Tuple[Monitor, UptimeStats]],
     open_incidents: int = 0,
     budgets: Optional[Mapping[str, ErrorBudget]] = None,
+    blocked: Optional[Mapping[str, Sequence[str]]] = None,
 ) -> str:
     """Render every monitor's current reading in the Prometheus text format.
 
@@ -124,6 +125,15 @@ def render_metrics(
     into one tuple would suggest they are the same measurement. A monitor
     with no objective is simply absent from the mapping, and exports none of
     the `_slo_` series at all, so a scraper never sees a target nobody set.
+
+    Dependencies are exported the same way tags are, and for the same
+    reason: `alerts_monitor_depends_on{monitor,upstream}` is one series per
+    edge, because a monitor has any number of upstreams and a label holds
+    one value. The suppression itself is a separate gauge -- an alert being
+    held back is a fact about this monitor, not about any one edge, and it
+    is the series worth alerting on: `alerts_monitor_alerts_held_back == 1`
+    for longer than an outage should last means a page is being swallowed
+    by a dependency that never recovered.
 
     Tags are exported as their own `alerts_monitor_tag` series rather than as
     a label on the existing ones. A monitor carries any number of tags and a
@@ -162,6 +172,18 @@ def render_metrics(
         "alerts_monitor_tag",
         "1 for each tag a monitor carries, as a joinable label set.",
     )
+    depends_on_family = _Family(
+        "alerts_monitor_depends_on",
+        "1 for each monitor this one is declared to depend on.",
+    )
+    upstream_down_family = _Family(
+        "alerts_monitor_upstream_down",
+        "Number of monitors this one depends on that are currently down.",
+    )
+    held_back_family = _Family(
+        "alerts_monitor_alerts_held_back",
+        "1 while this monitor is down and its alerts are suppressed by an upstream.",
+    )
     slo_target_family = _Family(
         "alerts_monitor_slo_target_ratio",
         "Availability a monitor is expected to hold, between 0 and 1.",
@@ -183,6 +205,7 @@ def render_metrics(
         "Standing against the SLO target (1 for the status it is in, 0 otherwise).",
     )
     budgets = budgets or {}
+    blocked = blocked or {}
 
     exported = 0
     for monitor, stats in rows:
@@ -206,6 +229,15 @@ def render_metrics(
             budget_family.add(monitor.degraded_latency_ms, labels)
         for tag in monitor.tags or []:
             tag_family.add(1, [*labels, ("tag", tag)])
+        for upstream in monitor.depends_on or []:
+            depends_on_family.add(1, [*labels, ("upstream", upstream)])
+        blocked_by = blocked.get(monitor.name, ())
+        # Exported for every monitor rather than only the blocked ones: a
+        # scraper cannot tell an absent series from a real zero, and
+        # "nothing is being suppressed" is exactly the reading an alert
+        # rule on this needs to see go back to normal.
+        upstream_down_family.add(len(blocked_by), labels)
+        held_back_family.add(int(monitor.alerts_held_back_by(list(blocked_by))), labels)
 
         budget = budgets.get(monitor.name)
         if budget is None:
@@ -246,6 +278,9 @@ def render_metrics(
         checks_family,
         budget_family,
         tag_family,
+        depends_on_family,
+        upstream_down_family,
+        held_back_family,
         slo_target_family,
         slo_window_family,
         slo_availability_family,

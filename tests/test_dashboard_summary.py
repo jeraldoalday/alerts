@@ -150,6 +150,7 @@ def test_api_summary_returns_state_counts(db):
             "with_target": 0,
             "statuses": {"ok": 0, "at-risk": 0, "breached": 0, "no-data": 0},
         },
+        "dependencies": {"with_upstream_down": 0, "alerts_held_back": 0},
     }
 
 

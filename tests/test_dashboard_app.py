@@ -156,6 +156,9 @@ def test_api_monitors_returns_json_summary(db):
             "average_latency_ms": None,
             "latency_percentiles": {"p50": None, "p95": None, "p99": None},
             "slo": None,
+            "depends_on": [],
+            "blocked_by": [],
+            "alerts_held_back": False,
         }
     ]
 

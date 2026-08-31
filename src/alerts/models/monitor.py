@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import enum
 from datetime import datetime
-from typing import TYPE_CHECKING, Dict, List, Optional
+from typing import TYPE_CHECKING, Dict, List, Optional, Sequence
 
 from sqlalchemy import JSON, Boolean, Enum, Float, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -151,6 +151,22 @@ class Monitor(Base):
         updating would suppress them forever.
         """
         return self.state == MonitorState.DOWN and not self.is_paused
+
+    def alerts_held_back_by(self, blocked_by: Sequence[str]) -> bool:
+        """Whether this monitor is failing and being kept quiet by an upstream.
+
+        The two halves are genuinely separate questions and both surfaces
+        that render this got them confused at least once: a healthy service
+        sitting above a broken database has a down upstream and nothing to
+        page about, so nothing of its is being held back. Only a monitor
+        that is down itself -- and live, so there is a check still running
+        to fail -- has an alert that isn't going out.
+
+        Takes the upstreams rather than looking them up, because the caller
+        already has them: the page, the JSON payload, and the exposition all
+        walk a set of monitors against one graph.
+        """
+        return self.blocks_dependents and bool(blocked_by)
 
     @property
     def is_paused(self) -> bool:

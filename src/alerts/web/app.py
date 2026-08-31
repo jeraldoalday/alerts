@@ -78,6 +78,23 @@ def _slo_payload(budget: Optional[ErrorBudget]) -> Optional[Dict[str, Any]]:
     }
 
 
+def _dependency_payload(monitor, blocked_by: List[str]) -> Dict[str, Any]:
+    """One monitor's dependency standing, for the JSON surfaces.
+
+    Two keys rather than one, because a client asking "is anything being
+    swallowed" and one asking "what is broken underneath this" want
+    different answers. `blocked_by` is the fact -- these upstreams are down
+    -- and is populated for a perfectly healthy service too.
+    `alerts_held_back` is the consequence, and is true only when this
+    monitor is itself failing and therefore has a page that isn't going
+    out.
+    """
+    return {
+        "blocked_by": list(blocked_by),
+        "alerts_held_back": monitor.alerts_held_back_by(blocked_by),
+    }
+
+
 def _decoded_path(environ: dict) -> str:
     """The request path as text, undoing WSGI's latin-1 transport encoding.
 
@@ -240,6 +257,11 @@ class DashboardApp:
                 last_checked_at = checks[0].checked_at if checks else None
                 rows.append((monitor, stats, last_checked_at))
             budgets = queries.error_budgets(session, monitors)
+            # Resolved against every monitor, not just the filtered ones: a
+            # `?tag=payments` view still has to be able to say that its
+            # checkout page is quiet because of a database nobody on that
+            # team tagged.
+            blocked = queries.blocking_upstreams(session, monitors)
             summary = summarize_states(monitors, queries.count_open_incidents(session))
             body = render.render_index(
                 rows,
@@ -247,6 +269,7 @@ class DashboardApp:
                 tags=queries.known_tags(session),
                 active_tag=tag,
                 budgets=budgets,
+                blocked=blocked,
             )
         return self._respond_html(start_response, "200 OK", body)
 
@@ -260,8 +283,18 @@ class DashboardApp:
             checks = queries.recent_check_results(session, monitor.id, self._recent_checks_limit)
             incidents = queries.recent_incidents(session, monitor.id)
             stats = compute_uptime_stats(checks)
+            graph = queries.dependency_graph(session)
             body = render.render_monitor_detail(
-                monitor, stats, checks, incidents, queries.error_budget(session, monitor)
+                monitor,
+                stats,
+                checks,
+                incidents,
+                queries.error_budget(session, monitor),
+                depends_on=graph.direct(monitor.name),
+                needed_by=graph.dependents(monitor.name),
+                blocked_by=graph.blocking(
+                    monitor.name, queries.down_monitor_names(session)
+                ),
             )
         return self._respond_html(start_response, "200 OK", body)
 
@@ -275,6 +308,8 @@ class DashboardApp:
             checks = queries.recent_check_results(session, monitor.id, self._recent_checks_limit)
             incidents = queries.recent_incidents(session, monitor.id)
             stats = compute_uptime_stats(checks)
+            graph = queries.dependency_graph(session)
+            blocked_by = graph.blocking(monitor.name, queries.down_monitor_names(session))
             payload: Dict[str, Any] = {
                 "name": monitor.name,
                 "type": monitor.type.value,
@@ -287,6 +322,9 @@ class DashboardApp:
                 "average_latency_ms": stats.average_latency_ms,
                 "latency_percentiles": _percentile_payload(stats),
                 "slo": _slo_payload(queries.error_budget(session, monitor)),
+                "depends_on": list(monitor.depends_on or []),
+                "needed_by": graph.dependents(monitor.name),
+                **_dependency_payload(monitor, blocked_by),
                 "recent_checks": [
                     {
                         "checked_at": check.checked_at.isoformat(),
@@ -320,8 +358,10 @@ class DashboardApp:
         """
         tag = _tag_param(parse_qs(query, keep_blank_values=True))
         with self._database.session() as session:
+            monitors = queries.list_monitors(session, tag=tag)
+            blocked = queries.blocking_upstreams(session, monitors)
             payload = []
-            for monitor in queries.list_monitors(session, tag=tag):
+            for monitor in monitors:
                 checks = queries.recent_check_results(
                     session, monitor.id, self._recent_checks_limit
                 )
@@ -338,6 +378,8 @@ class DashboardApp:
                         "average_latency_ms": stats.average_latency_ms,
                         "latency_percentiles": _percentile_payload(stats),
                         "slo": _slo_payload(queries.error_budget(session, monitor)),
+                        "depends_on": list(monitor.depends_on or []),
+                        **_dependency_payload(monitor, blocked.get(monitor.name, [])),
                     }
                 )
         return self._respond_json(
@@ -430,6 +472,12 @@ class DashboardApp:
                 for monitor in monitors
                 if not monitor.is_paused
             )
+            blocked = queries.blocking_upstreams(session, monitors)
+            held_back = sum(
+                1
+                for monitor in monitors
+                if monitor.alerts_held_back_by(blocked.get(monitor.name, []))
+            )
         payload = {
             "total": summary.total,
             "open_incidents": summary.open_incidents,
@@ -441,6 +489,10 @@ class DashboardApp:
                 "statuses": {
                     status.value: count for status, count in budgets.counts.items()
                 },
+            },
+            "dependencies": {
+                "with_upstream_down": len(blocked),
+                "alerts_held_back": held_back,
             },
         }
         return self._respond_json(start_response, "200 OK", payload)
@@ -469,6 +521,7 @@ class DashboardApp:
                 rows,
                 queries.count_open_incidents(session),
                 budgets=queries.error_budgets(session, monitors),
+                blocked=queries.blocking_upstreams(session, monitors),
             )
         return self._respond(
             start_response, "200 OK", body.encode("utf-8"), content_type=metrics.CONTENT_TYPE

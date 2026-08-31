@@ -55,6 +55,7 @@ th { color: #57606a; font-weight: 600; font-size: 0.85rem; text-transform: upper
   background: #eaeef2; color: #57606a; font-size: 0.78rem; text-decoration: none; }
 .tag:hover { background: #d0d7de; text-decoration: none; }
 .tag.current { background: #0969da; color: #fff; }
+.note { color: #57606a; font-size: 0.78rem; margin-top: 0.2rem; }
 """
 
 
@@ -123,6 +124,30 @@ def render_tag_filter(tags: Sequence[str], active: Optional[str] = None) -> str:
         for tag in tags
     ]
     return f'<p class="tags">{" ".join(links)}</p>'
+
+
+def _dependency_note(monitor: Monitor, blocked_by: Sequence[str]) -> str:
+    """How a monitor's dependency situation is worded, wherever it is shown.
+
+    Two different sentences, because they are two different facts. A
+    monitor that is down with something down underneath it is having its
+    alerts held back, and that is why nobody was paged. A healthy monitor
+    over the same broken upstream is not being suppressed at all -- saying
+    so would tell an operator that pages are being swallowed when there
+    are none to send -- so its row reports the fact and stops there.
+    """
+    if not blocked_by:
+        return ""
+    chain = escape(", ".join(blocked_by))
+    if monitor.alerts_held_back_by(blocked_by):
+        return f"alerts held back &middot; {chain} down"
+    return f"{chain} down"
+
+
+def _blocked_marker(monitor: Monitor, blocked_by: Sequence[str]) -> str:
+    """The dependency note under a state badge in the index table."""
+    note = _dependency_note(monitor, blocked_by)
+    return f'<div class="note">{note}</div>' if note else ""
 
 
 def _paused_marker(monitor: Monitor) -> str:
@@ -262,7 +287,9 @@ def _summary_tile(label: str, count: int, color: Optional[str] = None) -> str:
 
 
 def render_summary(
-    summary: StateSummary, budgets: Optional[BudgetSummary] = None
+    summary: StateSummary,
+    budgets: Optional[BudgetSummary] = None,
+    held_back: int = 0,
 ) -> str:
     """A row of at-a-glance tiles: one per monitor state, plus open incidents.
 
@@ -302,6 +329,14 @@ def render_summary(
                 "slo breached", budgets.breaching, _BUDGET_COLORS[BudgetStatus.BREACHED]
             )
         )
+    if held_back:
+        # Only when it is non-zero, the way "degraded" and "at risk" are. A
+        # zero here is not reassurance; it is the normal state of an estate
+        # that has never declared a dependency, and a permanent
+        # "0 alerts held back" tile would be a tile about nothing.
+        tiles.append(
+            _summary_tile("alerts held back", held_back, _STATE_COLORS[MonitorState.DOWN])
+        )
     if summary.paused:
         tiles.append(_summary_tile("paused", summary.paused))
     return f'<ul class="summary">{"".join(tiles)}</ul>'
@@ -313,8 +348,16 @@ def render_index(
     tags: Sequence[str] = (),
     active_tag: Optional[str] = None,
     budgets: Optional[Mapping[str, ErrorBudget]] = None,
+    blocked: Optional[Mapping[str, Sequence[str]]] = None,
 ) -> str:
     """The monitor table.
+
+    Down upstreams arrive as a mapping keyed by monitor name, like the
+    budgets and for the same reason: a monitor with nothing down above it
+    is simply absent. They are rendered under the state badge rather than
+    in a column of their own -- the table is already nine columns wide, and
+    the fact is only ever interesting for the handful of rows that have
+    one.
 
     Budgets arrive as a mapping keyed by monitor name rather than as a
     fourth element of each row: they are measured over the monitor's own SLO
@@ -324,6 +367,7 @@ def render_index(
     the mapping and gets an em dash.
     """
     budgets = budgets or {}
+    blocked = blocked or {}
     body_rows: List[str] = []
     for monitor, stats, last_checked_at in rows:
         body_rows.append(
@@ -332,7 +376,8 @@ def render_index(
             f"{_paused_marker(monitor)}</td>"
             f"<td>{escape(monitor.type.value)}</td>"
             f"<td>{_tag_links(monitor, active_tag)}</td>"
-            f"<td>{_state_badge(monitor.state)}</td>"
+            f"<td>{_state_badge(monitor.state)}"
+            f"{_blocked_marker(monitor, blocked.get(monitor.name, ()))}</td>"
             f"<td>{_format_percentage(stats.uptime_percentage)}</td>"
             f"<td>{_format_latency(stats.average_latency_ms)}</td>"
             f"<td>{_format_latency(stats.p95_latency_ms)}</td>"
@@ -363,8 +408,13 @@ def render_index(
     budget_summary = summarize_budgets(
         budgets.get(monitor.name) for monitor, _, _ in rows if not monitor.is_paused
     )
+    held_back = sum(
+        1
+        for monitor, _, _ in rows
+        if monitor.alerts_held_back_by(blocked.get(monitor.name, ()))
+    )
     summary_html = (
-        render_summary(summary, budget_summary) if summary is not None else ""
+        render_summary(summary, budget_summary, held_back) if summary is not None else ""
     )
     filter_html = render_tag_filter(tags, active_tag)
     heading = "Monitors" if active_tag is None else f"Monitors: {escape(active_tag)}"
@@ -416,12 +466,53 @@ def _latency_budget_note(monitor: Monitor) -> str:
     )
 
 
+def _monitor_links(names: Sequence[str]) -> str:
+    """A list of monitor names, each linking to its own page."""
+    return ", ".join(
+        f'<a href="/monitors/{_url_path(name)}">{escape(name)}</a>' for name in names
+    )
+
+
+def _dependency_detail(
+    monitor: Monitor,
+    depends_on: Sequence[str],
+    needed_by: Sequence[str],
+    blocked_by: Sequence[str],
+) -> str:
+    """The dependency block on a monitor's own page.
+
+    Rendered only for a monitor that is part of the graph, for the reason
+    the SLO block above it is: a section reading "depends on nothing" on
+    every one of forty services is a section nobody reads past.
+
+    Both directions are shown. What a service needs explains why it is
+    quiet; what needs it is the blast radius an operator wants the moment
+    they are paged about this one.
+    """
+    if not depends_on and not needed_by:
+        return ""
+    lines = []
+    if depends_on:
+        lines.append(f"depends on {_monitor_links(depends_on)}")
+    if needed_by:
+        lines.append(f"needed by {_monitor_links(needed_by)}")
+    note = _dependency_note(monitor, blocked_by)
+    if note:
+        lines.append(
+            f'<span style="color:{_STATE_COLORS[MonitorState.DOWN]}">{note}</span>'
+        )
+    return "<h2>Dependencies</h2><p>" + "<br>".join(lines) + "</p>"
+
+
 def render_monitor_detail(
     monitor: Monitor,
     stats: UptimeStats,
     check_results: Sequence[CheckResult],
     incidents: Sequence[Incident],
     budget: Optional[ErrorBudget] = None,
+    depends_on: Sequence[str] = (),
+    needed_by: Sequence[str] = (),
+    blocked_by: Sequence[str] = (),
 ) -> str:
     empty_checks_row = '<tr><td colspan="5" class="muted">No checks yet.</td></tr>'
     checks_table = (
@@ -456,6 +547,7 @@ def render_monitor_detail(
         f"{_latency_budget_note(monitor)}</p>"
         f"<p>{_percentile_summary(stats)}</p>"
         f"{_budget_detail(budget)}"
+        f"{_dependency_detail(monitor, depends_on, needed_by, blocked_by)}"
         f"<h2>Recent checks</h2>{checks_table}"
         f"<h2>Incidents</h2>{incidents_table}"
     )
