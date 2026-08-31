@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Dict, List, Optional, Sequence
 from sqlalchemy import JSON, Boolean, Enum, Float, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
+from alerts.dependencies import is_held_back
 from alerts.models.base import Base
 from alerts.slo import DEFAULT_WINDOW_DAYS as DEFAULT_SLO_WINDOW_DAYS
 from alerts.tags import normalise as normalise_tag
@@ -166,7 +167,11 @@ class Monitor(Base):
         already has them: the page, the JSON payload, and the exposition all
         walk a set of monitors against one graph.
         """
-        return self.blocks_dependents and bool(blocked_by)
+        return is_held_back(
+            is_down=self.state == MonitorState.DOWN,
+            is_paused=self.is_paused,
+            blocked_by=blocked_by,
+        )
 
     @property
     def is_paused(self) -> bool:

@@ -246,6 +246,25 @@ class DependencyGraph:
         return find_cycle(self.edges)
 
 
+def is_held_back(*, is_down: bool, is_paused: bool, blocked_by: Collection[str]) -> bool:
+    """Whether a monitor has a page that isn't going out because of an upstream.
+
+    Three surfaces render this and each of them has its own idea of what a
+    monitor is -- an ORM row, a status row, a dependency row -- so the rule
+    lives here, over the three facts all of them have, rather than being
+    spelled out three times in three slightly different ways.
+
+    A down upstream is not enough on its own, which is the part worth being
+    careful about. A healthy service sitting above a broken database has
+    nothing to page about, so nothing of its is being suppressed; saying
+    otherwise would tell an operator that alerts are being swallowed when
+    there are none to send. A paused monitor is out for the same reason it
+    never blocks anything: nothing is checking it, so there is no alert it
+    could be owed.
+    """
+    return is_down and not is_paused and bool(blocked_by)
+
+
 def build_graph(entries: Iterable[Tuple[str, Sequence[str]]]) -> DependencyGraph:
     """Build a graph from (monitor name, declared dependencies) pairs."""
     return DependencyGraph(

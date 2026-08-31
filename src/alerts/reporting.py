@@ -25,7 +25,7 @@ from typing import List, Optional, Sequence
 from sqlalchemy.orm import Session
 
 from alerts.config import MaintenanceWindowConfig
-from alerts.dependencies import describe_chain
+from alerts.dependencies import describe_chain, is_held_back
 from alerts.maintenance import active_occurrence, describe_schedule, next_occurrence
 from alerts.models import Incident, IncidentState, MonitorState
 from alerts.probe import ProbeResult
@@ -785,12 +785,14 @@ class DependencyRow:
     def alerts_held_back(self) -> bool:
         """Whether this monitor is failing and being kept quiet because of it.
 
-        The distinction the report lives or dies on. A monitor with a down
-        upstream that is itself perfectly healthy is not being suppressed;
-        nothing wants to page about it. Only a monitor that is down *and*
-        has something down underneath it has an alert that isn't going out.
+        The distinction the report lives or dies on -- see
+        `dependencies.is_held_back`, which is where the rule lives.
         """
-        return self.is_blocked and self.state == MonitorState.DOWN and not self.paused
+        return is_held_back(
+            is_down=self.state == MonitorState.DOWN,
+            is_paused=self.paused,
+            blocked_by=self.blocked_by,
+        )
 
     @property
     def is_root_cause(self) -> bool:
