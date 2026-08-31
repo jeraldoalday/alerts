@@ -203,6 +203,7 @@ async def _run(config_path: str) -> None:
         notifiers=notifiers,
         cooldown_seconds=config.notifications.cooldown_seconds,
         maintenance_windows=config.maintenance,
+        dependencies=config.dependency_graph(),
     )
     await scheduler.run()
 

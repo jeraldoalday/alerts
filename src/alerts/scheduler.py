@@ -17,6 +17,7 @@ from alerts.checkers.ssl import SslChecker
 from alerts.checkers.tcp import TcpChecker
 from alerts.config import MaintenanceWindowConfig, MonitorConfig
 from alerts.db import Database
+from alerts.dependencies import DependencyGraph, describe_chain
 from alerts.envsubst import MissingEnvVar
 from alerts.incidents import sync_incident
 from alerts.maintenance import active_windows
@@ -187,6 +188,7 @@ def sync_monitors(session, monitor_configs: Iterable[MonitorConfig]) -> None:
                     headers=dict(cfg.headers),
                     channels=list(cfg.channels),
                     tags=list(cfg.tags),
+                    depends_on=list(cfg.depends_on),
                     slo_target=cfg.slo_target,
                     slo_window_days=cfg.slo_window_days,
                     enabled=True,
@@ -206,6 +208,7 @@ def sync_monitors(session, monitor_configs: Iterable[MonitorConfig]) -> None:
             monitor.headers = dict(cfg.headers)
             monitor.channels = list(cfg.channels)
             monitor.tags = list(cfg.tags)
+            monitor.depends_on = list(cfg.depends_on)
             monitor.slo_target = cfg.slo_target
             monitor.slo_window_days = cfg.slo_window_days
             if monitor.is_paused:
@@ -230,12 +233,17 @@ class Scheduler:
         notifiers: Optional[Dict[str, Notifier]] = None,
         cooldown_seconds: int = 900,
         maintenance_windows: Optional[Sequence[MaintenanceWindowConfig]] = None,
+        dependencies: Optional[DependencyGraph] = None,
     ):
         self._database = database
         self._checkers = checkers or default_checkers()
         self._notifiers = notifiers or {}
         self._cooldown_seconds = cooldown_seconds
         self._maintenance_windows = list(maintenance_windows or [])
+        # Comes from the config rather than from the monitor rows, for the
+        # same reason the maintenance windows do: it is a declaration, and
+        # the file is what the operator just edited.
+        self._dependencies = dependencies or DependencyGraph(edges={})
         self._semaphore = asyncio.Semaphore(max_concurrent_checks)
         self._stopping = asyncio.Event()
         self._tasks: List[asyncio.Task] = []
@@ -330,6 +338,33 @@ class Scheduler:
 
         await self._dispatch_notifications(monitor_id)
 
+    def _blocking_upstreams(self, session, monitor: Monitor) -> List[str]:
+        """The monitors this one depends on that are down right now.
+
+        Empty for a monitor that declares no dependencies, which is most of
+        them and every monitor on an estate that doesn't use the feature --
+        checked first so the extra query only runs where there is something
+        to look up.
+
+        Transitive, not just the directly declared ones. A page depending
+        on an API that depends on a database has an unambiguous root cause
+        when the database goes down, and whether the API has crossed its own
+        `failure_threshold` yet is a matter of timing: thresholds and
+        intervals differ, so the intermediate monitor is regularly still UP
+        for a minute or two after the thing underneath it has gone. Holding
+        back only the direct dependents would page for the page during
+        exactly that window.
+        """
+        upstream = self._dependencies.upstream(monitor.name)
+        if not upstream:
+            return []
+        down = {
+            row.name
+            for row in session.query(Monitor).filter(Monitor.name.in_(upstream)).all()
+            if row.blocks_dependents
+        }
+        return self._dependencies.blocking(monitor.name, down)
+
     async def _dispatch_notifications(self, monitor_id: int) -> None:
         """Send whatever notifications the engine decides are due, and log them.
 
@@ -346,6 +381,14 @@ class Scheduler:
         history of what the change did to the service survives the window.
         Nothing is logged as sent, so an incident that outlives the window
         is announced as soon as it ends rather than being lost.
+
+        A monitor whose upstream dependency is down returns the same way,
+        for the same reasons and with the same consequences. The gateway in
+        front of a broken database is not independently broken, and the
+        page about the gateway is the fourteenth one nobody needed; held
+        back, its incident is still opened and recorded, and if the gateway
+        is still down once the database recovers the alert goes out then --
+        naming the service that is actually still failing.
         """
         if not self._notifiers:
             return
@@ -360,6 +403,14 @@ class Scheduler:
                     "suppressing notifications for %s: in maintenance window(s) %s",
                     monitor.name,
                     ", ".join(window.name for window in windows),
+                )
+                return
+            blocking = self._blocking_upstreams(session, monitor)
+            if blocking:
+                logger.debug(
+                    "suppressing notifications for %s: upstream %s down",
+                    monitor.name,
+                    describe_chain(blocking),
                 )
                 return
             incident = (
