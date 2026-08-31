@@ -16,8 +16,25 @@ from alerts.reporting import (
     format_incident_summary,
     format_incident_table,
 )
+from alerts.timeutil import as_utc_naive, utcnow
 
+# The fixed "now" the row-collection and rendering tests measure against.
+# Every one of them passes it in explicitly, so their incidents can sit at
+# a date chosen for readability and stay where they were put.
 NOW = datetime(2026, 8, 21, 12, 0, 0)
+
+
+def _clock_now() -> datetime:
+    """What the subcommand-level tests anchor their incidents to.
+
+    `alerts incidents` measures its window against the real clock, so an
+    incident written two hours before a date frozen into this file drifts
+    out of the default seven-day window as soon as the file is a week old
+    -- and the test then fails on a Tuesday for reasons that have nothing
+    to do with the code it covers. Anchoring on the same clock the command
+    reads keeps "two hours ago" meaning two hours ago.
+    """
+    return as_utc_naive(utcnow())
 
 
 def _monitor(session, name: str = "site") -> Monitor:
@@ -32,8 +49,10 @@ def _monitor(session, name: str = "site") -> Monitor:
     return monitor
 
 
-def _incident(session, monitor_id: int, *, started_ago, lasted=None, cause="boom") -> Incident:
-    started_at = NOW - started_ago
+def _incident(
+    session, monitor_id: int, *, started_ago, lasted=None, cause="boom", anchor=None
+) -> Incident:
+    started_at = (anchor or NOW) - started_ago
     resolved_at = started_at + lasted if lasted is not None else None
     incident = Incident(
         monitor_id=monitor_id,
@@ -350,6 +369,7 @@ def test_main_incidents_prints_a_table_and_a_summary(tmp_path, capsys):
             started_ago=timedelta(hours=2),
             lasted=timedelta(minutes=42),
             cause="expected status 200, got 502",
+            anchor=_clock_now(),
         )
 
     exit_code = cli.main(["incidents", "--config", config_path])
@@ -374,7 +394,7 @@ def test_main_incidents_exit_code_flag_reports_an_open_incident(tmp_path, capsys
     database.create_all()
     with database.session() as session:
         monitor = _monitor(session)
-        _incident(session, monitor.id, started_ago=timedelta(minutes=5))
+        _incident(session, monitor.id, started_ago=timedelta(minutes=5), anchor=_clock_now())
 
     assert cli.main(["incidents", "--config", config_path]) == 0, "non-zero exit is opt-in"
     assert cli.main(["incidents", "--config", config_path, "--exit-code"]) == 1
@@ -387,7 +407,13 @@ def test_main_incidents_exit_code_is_zero_when_everything_recovered(tmp_path, ca
     database.create_all()
     with database.session() as session:
         monitor = _monitor(session)
-        _incident(session, monitor.id, started_ago=timedelta(hours=1), lasted=timedelta(minutes=2))
+        _incident(
+            session,
+            monitor.id,
+            started_ago=timedelta(hours=1),
+            lasted=timedelta(minutes=2),
+            anchor=_clock_now(),
+        )
 
     assert cli.main(["incidents", "--config", config_path, "--exit-code"]) == 0
     capsys.readouterr()
@@ -400,7 +426,11 @@ def test_main_incidents_days_zero_drops_the_window(tmp_path, capsys):
     with database.session() as session:
         monitor = _monitor(session)
         _incident(
-            session, monitor.id, started_ago=timedelta(days=200), lasted=timedelta(minutes=1)
+            session,
+            monitor.id,
+            started_ago=timedelta(days=200),
+            lasted=timedelta(minutes=1),
+            anchor=_clock_now(),
         )
 
     cli.main(["incidents", "--config", config_path, "--days", "0"])
