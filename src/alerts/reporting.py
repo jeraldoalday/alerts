@@ -95,6 +95,20 @@ class StatusRow:
     # `collect_status_rows` -- doesn't have to invent a percentile.
     p95_latency_ms: Optional[float] = None
     tags: Sequence[str] = ()
+    # The monitors this one depends on that are down right now. Carried so
+    # the NOTE column can explain a silence: a row reading `down` with
+    # nobody paged about it looks like the notifier is broken, and this is
+    # the difference between that and a dependency doing its job.
+    blocked_by: Sequence[str] = ()
+
+    @property
+    def alerts_held_back(self) -> bool:
+        """Whether this monitor is down and being kept quiet by an upstream."""
+        return is_held_back(
+            is_down=self.state == MonitorState.DOWN,
+            is_paused=self.paused,
+            blocked_by=self.blocked_by,
+        )
 
     @property
     def is_down(self) -> bool:
@@ -104,6 +118,10 @@ class StatusRow:
         the config stopped declaring it, nothing is checking it any more, and
         failing a scripted check on a frozen state would keep an operator
         chasing an outage that is no longer being observed.
+
+        A monitor whose alerts are held back is *not* excluded. Nobody was
+        paged about it, but it is down, and a script asking "is anything
+        broken" is asking about the estate rather than about who got told.
         """
         return self.state == MonitorState.DOWN and not self.paused
 
@@ -126,9 +144,16 @@ def collect_status_rows(
     rows rather than an error, the same as a `--monitor` naming nothing:
     the summary line underneath says "0 monitor(s)", which is the honest
     answer to a question about a group that is empty.
+
+    Down upstreams are resolved against the whole estate rather than the
+    filtered set: a `--tag payments` table still has to be able to explain
+    that its checkout page is quiet because of a database nobody on that
+    team tagged.
     """
+    monitors = queries.list_monitors(session, tag=tag)
+    blocked = queries.blocking_upstreams(session, monitors)
     rows: List[StatusRow] = []
-    for monitor in queries.list_monitors(session, tag=tag):
+    for monitor in monitors:
         checks = queries.recent_check_results(session, monitor.id, checks_window)
         stats = compute_uptime_stats(checks)
         incident = _open_incident(session, monitor.id)
@@ -144,6 +169,7 @@ def collect_status_rows(
                 open_incident_since=incident.started_at if incident else None,
                 paused=monitor.is_paused,
                 tags=tuple(monitor.tags or ()),
+                blocked_by=tuple(blocked.get(monitor.name, ())),
             )
         )
     return rows
@@ -171,14 +197,25 @@ def _relative_age(value: Optional[datetime], now: datetime) -> str:
 
 
 def _note(row: StatusRow, now: datetime) -> str:
+    """The NOTE cell: how long this has been broken, and why it is quiet.
+
+    The suppression is appended to the open-incident note rather than
+    replacing it, because they answer different questions and an operator
+    looking at this table during an outage has both: how long has this been
+    down, and why has nobody been paged about it. A row reading `down` with
+    silence around it otherwise looks like the notifier has failed.
+    """
     if row.paused:
         return "paused, not in config"
-    if row.open_incident_since is None:
-        return ""
-    down_for = format_duration(
-        (as_utc_naive(now) - as_utc_naive(row.open_incident_since)).total_seconds()
-    )
-    return f"open incident, {down_for}"
+    parts = []
+    if row.open_incident_since is not None:
+        down_for = format_duration(
+            (as_utc_naive(now) - as_utc_naive(row.open_incident_since)).total_seconds()
+        )
+        parts.append(f"open incident, {down_for}")
+    if row.alerts_held_back:
+        parts.append(f"alerts held back by {', '.join(row.blocked_by)}")
+    return "; ".join(parts)
 
 
 def _latency(value: Optional[float]) -> str:

@@ -109,12 +109,18 @@ alerts status --config config.yaml
 
 ```
 MONITOR      TYPE  TAGS           STATE     UPTIME  LATENCY  P95     LAST CHECK  NOTE
-api-gateway  http  prod,payments  up        100.0%  87ms     104ms   12s ago
+api-gateway  http  prod,payments  down      41.0%   -        -       12s ago     open incident, 2h 4m; alerts held back by legacy-db
 main-site    http  prod,web       degraded  99.8%   1624ms   3980ms  8s ago
 legacy-db    tcp   prod           down      41.0%   -        -       30s ago     open incident, 2h 5m
 
-3 monitor(s): 1 up, 1 degraded, 1 down
+3 monitor(s): 1 degraded, 2 down
 ```
+
+The NOTE column answers two questions during an outage: how long this has
+been broken, and why nobody was paged about it -- see
+[Dependencies](#dependencies). A held-back monitor still fails
+`--exit-code`, since a script asking whether anything is broken is asking
+about the estate rather than about who got told.
 
 `--exit-code` makes it exit 1 when anything is down, for use as a scripted
 check; without it the command always exits 0. `--tag NAME` narrows it to one
