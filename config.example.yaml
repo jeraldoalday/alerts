@@ -88,6 +88,14 @@ monitors:
     # rest of the window with no way to earn it back.
     slo_target: 99.9
     slo_window_days: 30
+    # The monitors this one needs in order to be healthy. While any of them
+    # is down -- directly or further up the chain -- this monitor's own
+    # alerts are held back: the check still runs, the result and the
+    # incident are still recorded, and only the page is suppressed, because
+    # the page naming the database is the one worth reading. The names must
+    # match monitors declared in this file, and the graph may not contain a
+    # cycle; both are refused at load time. See `alerts deps`.
+    depends_on: [api-gateway]
     channels: [ops-slack, ops-email]
 
   - name: api-gateway
@@ -107,7 +115,19 @@ monitors:
     # are noticed within the hour rather than at the end of the month.
     slo_target: 99.95
     slo_window_days: 7
+    depends_on: [primary-db]
     channels: [ops-slack]
+
+  # The thing at the bottom of the chain above. It depends on nothing, so
+  # it is the monitor that still pages when the database goes: main-site
+  # and api-gateway are held back, and this is the alert that names the
+  # cause.
+  - name: primary-db
+    type: tcp
+    target: db.example.com:5432
+    interval_seconds: 30
+    tags: [prod, data]
+    channels: [ops-slack, ops-email]
 
   - name: dashboard-itself
     type: http

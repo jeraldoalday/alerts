@@ -121,3 +121,17 @@ def test_every_tag_in_the_example_is_carried_by_a_monitor(example_env):
 
     for tag in config.tags():
         assert config.monitors_tagged(tag), f"tag {tag!r} is listed but on no monitor"
+
+
+def test_every_dependency_in_the_example_names_a_real_monitor(example_env):
+    """The example is where anyone learns the shape of `depends_on`."""
+    config = load_config(EXAMPLE)
+    known = {monitor.name for monitor in config.monitors}
+
+    declared = {name for monitor in config.monitors for name in monitor.depends_on}
+    assert declared, "the example is meant to show a dependency"
+    assert declared <= known, sorted(declared - known)
+
+
+def test_the_examples_dependency_graph_has_no_cycle(example_env):
+    assert load_config(EXAMPLE).dependency_graph().cycle() is None
