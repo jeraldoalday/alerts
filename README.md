@@ -31,6 +31,7 @@ Early development. Current state:
 - [x] `alerts check` for probing the configured targets on demand
 - [x] Tags for grouping monitors, and filtering every report by one
 - [x] Uptime SLO targets, error budgets, and `alerts slo`
+- [x] Monitor dependencies, so one outage pages once
 
 See open issues and commit history for day-to-day progress.
 
@@ -179,6 +180,26 @@ toward "no data" whatever the service is really doing.
 See [SLO targets and error budgets](#slo-targets-and-error-budgets) for what
 the numbers mean.
 
+Show what needs what, and whose alerts are being held back because of it:
+
+```bash
+alerts deps --config config.yaml
+```
+
+```
+MONITOR      STATE  DEPENDS ON   UPSTREAM DOWN  NOTE
+primary-db   down   -            -              root cause, 2 dependent(s) held back
+api-gateway  down   primary-db   primary-db     alerts held back
+main-site    down   api-gateway  primary-db     alerts held back
+
+3 monitor(s) in the dependency graph, 2 held back, 1 root cause(s)
+```
+
+`--monitor NAME` narrows it to that monitor's neighbourhood, and
+`--exit-code` exits 1 while any alert is being held back. See
+[Dependencies](#dependencies) for what the columns mean and what suppression
+does and doesn't do.
+
 Delete check and incident history that has aged past the `retention` policy.
 There's no automatic pruning -- it's a bulk write against the database the
 scheduler is using, so run it from cron when it suits you:
@@ -228,8 +249,10 @@ The dashboard listens on `dashboard.host:dashboard.port` from the config
   response echoes the tag it filtered on
 - `/api/monitors/<name>` — JSON detail for one monitor, including recent
   checks, incidents, and its `slo` object
-- `/api/summary` — JSON state tally, open-incident count, and an `slo` tally
-  of how many objectives are being met; a constant-size response whatever
+- `/api/summary` — JSON state tally, open-incident count, a `dependencies`
+  tally of how many monitors have something down upstream and how many are
+  having alerts held back, and an `slo` tally of how many objectives are
+  being met; a constant-size response whatever
   the monitor count, for a wallboard or a polling check. `?tag=` narrows the
   state counts to one group
 - `/api/incidents` — JSON incident feed across every monitor, the counterpart
@@ -243,6 +266,96 @@ The dashboard listens on `dashboard.host:dashboard.port` from the config
 Every route answers `HEAD` with the headers a `GET` would return and no body,
 so the cheapest possible uptime check works against the dashboard too --
 including from an `alerts` monitor of its own.
+
+## Dependencies
+
+A monitor can declare the monitors it needs in order to be healthy:
+
+```yaml
+monitors:
+  - name: main-site
+    type: http
+    target: https://example.com
+    depends_on: [api-gateway]
+
+  - name: api-gateway
+    type: http
+    target: https://api.example.com/healthz
+    depends_on: [primary-db]
+
+  - name: primary-db
+    type: tcp
+    target: db.example.com:5432
+```
+
+When the database goes down, all three monitors fail. Without `depends_on`
+all three page, and the one naming the cause arrives somewhere in the middle
+of them. With it, only `primary-db` pages: while a monitor has something
+down upstream, its own alerts are held back.
+
+Held back, not turned off. The check still runs, the result is still
+recorded, the incident is still opened, and nothing is written to the
+notification log — which is what makes the suppression safe. If `main-site`
+is still down once the database recovers, the page goes out then, about a
+service that really is still broken on its own.
+
+The relationship is followed all the way up, not one hop. Thresholds and
+intervals differ, so `api-gateway` is regularly still reading `up` for a
+minute after the database has gone; suppressing only its direct dependents
+would page for `main-site` during exactly that window.
+
+Three states of an upstream deliberately do *not* suppress anything:
+
+- `degraded` — the upstream is still serving, so a dependent failing under
+  it is its own outage
+- `unknown` — nothing has checked it yet, and no evidence is not a reason
+  for silence
+- paused — its reading is frozen at the moment the config stopped declaring
+  it, so it would hold back a live service's alerts forever
+
+Two things are refused at load time. A `depends_on` naming a monitor that
+doesn't exist, because it looks configured and suppresses nothing — the
+outage it was set up for still pages everything. And a cycle, because every
+monitor in one is upstream of every other, so the first to go down holds
+back the alerts for all of them and the estate goes quiet at the moment it
+should be loudest. Names are matched exactly, with none of the case folding
+tags get: a dependency names one specific monitor, and `DB` resolving to
+`db` would silently watch the wrong row.
+
+Report the graph and what it is currently keeping quiet:
+
+```bash
+alerts deps --config config.yaml
+```
+
+```
+MONITOR      STATE  DEPENDS ON  UPSTREAM DOWN  NOTE
+primary-db   down   -           -              root cause, 2 dependent(s) held back
+api-gateway  down   primary-db  primary-db     alerts held back
+main-site    down   api-gateway primary-db     alerts held back
+
+3 monitor(s) in the dependency graph, 2 held back, 1 root cause(s)
+```
+
+Rows come out upstreams-first, so the chain reads down the page in the
+direction the failure travels, and monitors with no edges at all are left
+out — an estate of forty services with three dependencies between them
+prints four rows.
+
+`UPSTREAM DOWN` and the `NOTE` answer two different questions, and the
+report keeps them apart. A *healthy* monitor above a broken database has a
+down upstream and nothing being suppressed, because there is no page to
+hold back; only a monitor that is failing itself is having an alert kept
+from you. `--exit-code` fails on the second, not the first. `--monitor NAME`
+narrows the report to that monitor's neighbourhood — itself, what it needs,
+and what needs it — which covers both "why is this quiet" and "what does
+this take with it".
+
+The same facts appear on the dashboard (a note under the state badge, a
+Dependencies block on each monitor's page naming both directions, and a
+tile counting what is held back), as `depends_on`, `blocked_by`, and
+`alerts_held_back` on both `/api/monitors` routes, as a `dependencies` tally
+on `/api/summary`, and in `/metrics`.
 
 ## Tags
 
@@ -381,6 +494,9 @@ dashboard never disagree:
 | `alerts_monitor_checks{monitor,type}` | How many checks those two figures cover |
 | `alerts_monitor_latency_budget_ms{monitor,type}` | The monitor's `degraded_latency_ms`, if set |
 | `alerts_monitor_tag{monitor,type,tag}` | 1 for each tag a monitor carries, for joining on |
+| `alerts_monitor_depends_on{monitor,type,upstream}` | 1 for each monitor this one depends on |
+| `alerts_monitor_upstream_down{monitor,type}` | How many of those are down right now |
+| `alerts_monitor_alerts_held_back{monitor,type}` | 1 while this monitor is down and being kept quiet by an upstream |
 | `alerts_monitor_slo_target_ratio{monitor,type}` | The monitor's `slo_target`, as a 0-1 ratio |
 | `alerts_monitor_slo_window_days{monitor,type}` | Length of the window that target is measured over |
 | `alerts_monitor_slo_availability_ratio{monitor,type}` | Measured availability over that window |
@@ -397,6 +513,12 @@ The state gauge is exported once per state so an alert rule can be written
 as `alerts_monitor_state{state="down"} == 1` without knowing any numeric
 encoding. Paused monitors (below) are left out entirely — a scraper can't
 tell a frozen reading from a live one.
+
+`alerts_monitor_alerts_held_back` is worth an alert rule of its own: a
+monitor held back for longer than an outage should reasonably last means a
+page is being swallowed by a dependency that never came back. It is exported
+for every monitor, zeroes included, since a scraper can't tell an absent
+series from a reading of zero.
 
 `alerts_monitor_slo_budget_consumed_ratio` is exported unclipped, so
 `> 1` is the whole alert rule for a missed objective. A monitor with no
@@ -517,14 +639,16 @@ src/alerts/
   notifiers/      # Per-channel senders (Slack, webhook, email) + registry
   web/            # Read-only dashboard: WSGI app, HTML rendering, queries, /metrics
   maintenance.py  # Maintenance window schedules and whether one is active
+  dependencies.py # The graph of what needs what, and what that suppresses
   envsubst.py     # ${VAR} expansion for config values with a secret inside
   probe.py        # One-shot checks of the configured monitors, writing nothing
-  reporting.py    # Plain-text tables for `status`, `check`, `slo`, `incidents`, `maintenance`
+  reporting.py    # Plain-text tables for `status`, `check`, `slo`, `deps`,
+                  #   `incidents`, `maintenance`
   slo.py          # Error budget arithmetic for availability targets
   retention.py    # Deletes history past the configured retention window
   timeutil.py     # Shared UTC helpers (everything stored is UTC, naive on read)
   cli.py          # `alerts run` / `serve` / `check` / `status` / `slo` /
-                  #   `incidents` / `maintenance` / `prune`
+                  #   `deps` / `incidents` / `maintenance` / `prune`
 migrations/       # Alembic migrations
 tests/
 ```
