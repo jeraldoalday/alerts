@@ -212,3 +212,73 @@ def test_a_monitor_with_no_checks_has_no_p95(db):
 
     with db.session() as session:
         assert collect_status_rows(session)[0].p95_latency_ms is None
+
+
+def test_a_held_back_row_says_which_upstream_is_holding_it():
+    row = _row(state=MonitorState.DOWN, blocked_by=("legacy-db",))
+
+    assert "alerts held back by legacy-db" in format_status_table([row], now=NOW)
+
+
+def test_a_held_back_row_keeps_its_open_incident_note():
+    """Both questions get answered: how long, and why nobody heard."""
+    row = _row(
+        state=MonitorState.DOWN,
+        open_incident_since=NOW - timedelta(hours=2),
+        blocked_by=("legacy-db",),
+    )
+
+    note = format_status_table([row], now=NOW)
+
+    assert "open incident, 2h 0m; alerts held back by legacy-db" in note
+
+
+def test_a_healthy_row_over_a_down_upstream_says_nothing():
+    row = _row(state=MonitorState.UP, blocked_by=("legacy-db",))
+
+    assert "held back" not in format_status_table([row], now=NOW)
+
+
+def test_a_paused_row_says_only_that():
+    row = _row(state=MonitorState.DOWN, paused=True, blocked_by=("legacy-db",))
+
+    table = format_status_table([row], now=NOW)
+
+    assert "paused, not in config" in table
+    assert "held back" not in table
+
+
+def test_a_held_back_monitor_still_counts_as_down():
+    """Nobody was paged, but the service is broken and a gate must fail."""
+    row = _row(state=MonitorState.DOWN, blocked_by=("legacy-db",))
+
+    assert row.is_down
+    assert row.alerts_held_back
+
+
+def test_collect_status_rows_carries_the_down_upstreams(db):
+    with db.session() as session:
+        _monitor(session, "checkout", state=MonitorState.DOWN, depends_on=["db"])
+        _monitor(session, "db", state=MonitorState.DOWN)
+
+    with db.session() as session:
+        rows = {row.name: row for row in collect_status_rows(session)}
+
+    assert rows["checkout"].blocked_by == ("db",)
+    assert rows["checkout"].alerts_held_back
+    assert rows["db"].blocked_by == ()
+
+
+def test_a_filtered_status_table_still_explains_a_silence(db):
+    """The upstream may be tagged for another team, or not tagged at all."""
+    with db.session() as session:
+        _monitor(
+            session, "checkout", state=MonitorState.DOWN, depends_on=["db"], tags=["payments"]
+        )
+        _monitor(session, "db", state=MonitorState.DOWN, tags=["data"])
+
+    with db.session() as session:
+        rows = collect_status_rows(session, tag="payments")
+
+    assert [row.name for row in rows] == ["checkout"]
+    assert rows[0].blocked_by == ("db",)
