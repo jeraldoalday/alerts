@@ -79,6 +79,14 @@ class Monitor(Base):
     # table: they carry no behaviour and nothing joins on them, and a
     # handful of strings per monitor is not a relation worth modelling.
     tags: Mapped[List[str]] = mapped_column(JSON, default=list)
+    # The monitors this one needs in order to be healthy, by name. Stored
+    # as JSON alongside `tags` rather than as a self-referential foreign
+    # key: the config is the source of truth for the edges, and a real
+    # relation would have to be resolved (and could dangle) every time a
+    # monitor is added, renamed, or removed from the file. The names are
+    # validated against the configured set at load time, which is where a
+    # typo can still be reported as one.
+    depends_on: Mapped[List[str]] = mapped_column(JSON, default=list, server_default="[]")
     # False once a monitor disappears from the config. The row (and its
     # history) is kept, but the scheduler stops checking it -- see
     # `sync_monitors`.
@@ -126,6 +134,23 @@ class Monitor(Base):
         objective, and NULL is how that is spelled.
         """
         return self.slo_target is not None
+
+    @property
+    def blocks_dependents(self) -> bool:
+        """Whether this monitor being down should hold back its dependents' alerts.
+
+        The one definition of what counts as a down upstream, because three
+        surfaces ask the question -- the scheduler deciding whether to page,
+        the dashboard explaining why a service is quiet, and `alerts deps`
+        -- and an answer that differed between them would mean the page and
+        the page explaining the page disagreeing.
+
+        A paused monitor never blocks anything, however bad its last reading
+        was. Its state is frozen at the moment the config stopped declaring
+        it, and suppressing a live service's alerts on a reading nobody is
+        updating would suppress them forever.
+        """
+        return self.state == MonitorState.DOWN and not self.is_paused
 
     @property
     def is_paused(self) -> bool:
