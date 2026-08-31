@@ -1,4 +1,7 @@
-"""Command-line entrypoint: `alerts run|serve|check|status|slo|incidents|maintenance|prune`."""
+"""Command-line entrypoint.
+
+`alerts run|serve|check|status|slo|deps|incidents|maintenance|prune`.
+"""
 from __future__ import annotations
 
 import argparse
@@ -12,11 +15,14 @@ from alerts.db import Database
 from alerts.notifiers.registry import build_notifiers
 from alerts.probe import probe_monitors, select_monitors
 from alerts.reporting import (
+    collect_dependency_rows,
     collect_incident_rows,
     collect_maintenance_rows,
     collect_probe_rows,
     collect_slo_rows,
     collect_status_rows,
+    format_dependency_summary,
+    format_dependency_table,
     format_incident_summary,
     format_incident_table,
     format_maintenance_summary,
@@ -128,6 +134,20 @@ def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         "--exit-code",
         action="store_true",
         help="Exit 1 if any monitor is missing its target, for gating a release.",
+    )
+
+    deps_parser = subparsers.add_parser(
+        "deps", help="Report what each monitor depends on, and what is being held back."
+    )
+    deps_parser.add_argument("--config", default="config.yaml", help="Path to config.yaml")
+    deps_parser.add_argument(
+        "--monitor",
+        help="Only this monitor, what it depends on, and what depends on it.",
+    )
+    deps_parser.add_argument(
+        "--exit-code",
+        action="store_true",
+        help="Exit 1 if any monitor's alerts are currently held back by an upstream.",
     )
 
     incidents_parser = subparsers.add_parser(
@@ -356,6 +376,58 @@ def _slo(
     return 1 if use_exit_code and any(row.is_breaching for row in rows) else 0
 
 
+def _deps(config_path: str, monitor: Optional[str], use_exit_code: bool) -> int:
+    """Print the dependency table, returning the process exit code.
+
+    Read out of the same database the scheduler writes to, not out of the
+    config: the config says what should depend on what, and only the
+    database knows which of those things is down right now. That also
+    means the report answers for the estate as it is actually running,
+    including a monitor whose dependency was removed from the file but
+    whose row hasn't been synced yet.
+
+    The question it exists to answer is the one asked during an incident,
+    when a service is failing and nobody has been paged: what is upstream
+    of it, and is that why it is quiet? `--exit-code` is the scripted form
+    of the same question, for a deploy gate that shouldn't run while the
+    estate is being kept quiet by something underneath it.
+    """
+    config = load_config(config_path)
+    database = Database(config.database.url)
+    database.create_all()
+
+    with database.session() as session:
+        rows = collect_dependency_rows(session, monitor=monitor)
+        known_monitors = count_monitors(session)
+
+    if not rows and known_monitors == 0 and any(m.depends_on for m in config.monitors):
+        # The config declares dependencies and the database has never seen a
+        # monitor, so this is an estate that hasn't been synced rather than
+        # one with no edges. "No monitor declares a dependency" is a flatly
+        # false thing to say about the file that was just read, and it
+        # points at the wrong fix.
+        print(
+            f"No monitors in the database yet, though {config_path} declares "
+            "dependencies. Run `alerts run` to sync the config."
+        )
+        return 0
+
+    if monitor is not None and not rows:
+        # Distinguished from "nothing declares a dependency", which is what
+        # the empty table would otherwise say about a filter that matched
+        # nothing -- and failed under --exit-code for the same reason every
+        # other filter here fails on one: a gate that passes because a name
+        # was mistyped is the one way it could fail unnoticed.
+        print(f"No monitor named {monitor!r} is part of the dependency graph.")
+        return 1 if use_exit_code else 0
+
+    print(format_dependency_table(rows))
+    print()
+    print(format_dependency_summary(rows))
+
+    return 1 if use_exit_code and any(row.alerts_held_back for row in rows) else 0
+
+
 def _incidents(
     config_path: str,
     *,
@@ -486,6 +558,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         return _slo(
             args.config, monitor=args.monitor, tag=args.tag, use_exit_code=args.exit_code
         )
+    elif args.command == "deps":
+        return _deps(args.config, monitor=args.monitor, use_exit_code=args.exit_code)
     elif args.command == "incidents":
         return _incidents(
             args.config,

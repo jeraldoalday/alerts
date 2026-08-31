@@ -1,11 +1,12 @@
 """Plain-text tables for the reporting subcommands.
 
-One module per table would be five modules that all render aligned columns
+One module per table would be six modules that all render aligned columns
 the same way, so they live together: `alerts status` (what is the state of
 everything now), `alerts incidents` (what has been breaking), `alerts
 maintenance` (what is planned), `alerts check` (what does this config
-actually do right now), and `alerts slo` (what has been promised, and how
-much of the budget is left).
+actually do right now), `alerts slo` (what has been promised, and how much
+of the budget is left), and `alerts deps` (what needs what, and who is
+being kept quiet because of it).
 
 The dashboard answers the first of those too, but it needs a running process
 and a browser. These render the same pictures to stdout so they work over
@@ -24,6 +25,7 @@ from typing import List, Optional, Sequence
 from sqlalchemy.orm import Session
 
 from alerts.config import MaintenanceWindowConfig
+from alerts.dependencies import DependencyGraph, describe_chain, graph_of
 from alerts.maintenance import active_occurrence, describe_schedule, next_occurrence
 from alerts.models import Incident, IncidentState, MonitorState
 from alerts.probe import ProbeResult
@@ -46,6 +48,7 @@ _COLUMNS = (
 _MAINTENANCE_COLUMNS = ("WINDOW", "SCHEDULE", "MONITORS", "STATUS")
 _INCIDENT_COLUMNS = ("MONITOR", "STARTED", "DURATION", "STATE", "CAUSE")
 _PROBE_COLUMNS = ("MONITOR", "TYPE", "TARGET", "RESULT", "LATENCY", "DETAIL")
+_DEPENDENCY_COLUMNS = ("MONITOR", "STATE", "DEPENDS ON", "UPSTREAM DOWN", "NOTE")
 _SLO_COLUMNS = (
     "MONITOR",
     "TAGS",
@@ -743,3 +746,195 @@ def format_slo_summary(rows: Sequence[SloRow]) -> str:
         if tally
         else f"{len(rows)} monitor(s) with an objective"
     )
+
+
+@dataclass(frozen=True)
+class DependencyRow:
+    """One monitor's line in the `alerts deps` table.
+
+    `depends_on` is what the monitor declared, in the order it declared it.
+    `blocked_by` is which of those is down right now, transitively: the
+    reason a service is quiet may be two hops away, and the row exists to
+    answer "why did nobody hear about this" without a second lookup.
+
+    A down upstream is not by itself a suppressed alert. A healthy monitor
+    sitting above a broken database has nothing to page about, so its row
+    reports the down upstream and says nothing about alerts -- see
+    `alerts_held_back`, which is the state that actually keeps somebody
+    from being told.
+
+    `dependents_held_back` is the same question from the other end -- how
+    many services are failing right now and being kept quiet because of
+    this one -- which is what turns the row for a broken database from a
+    line in a table into the line worth reading first.
+    """
+
+    name: str
+    state: MonitorState
+    depends_on: Sequence[str] = ()
+    blocked_by: Sequence[str] = ()
+    dependents_held_back: int = 0
+    paused: bool = False
+
+    @property
+    def is_blocked(self) -> bool:
+        """Whether anything this monitor depends on is down right now."""
+        return bool(self.blocked_by)
+
+    @property
+    def alerts_held_back(self) -> bool:
+        """Whether this monitor is failing and being kept quiet because of it.
+
+        The distinction the report lives or dies on. A monitor with a down
+        upstream that is itself perfectly healthy is not being suppressed;
+        nothing wants to page about it. Only a monitor that is down *and*
+        has something down underneath it has an alert that isn't going out.
+        """
+        return self.is_blocked and self.state == MonitorState.DOWN and not self.paused
+
+    @property
+    def is_root_cause(self) -> bool:
+        """Whether this monitor is the reason other monitors are quiet.
+
+        Down, not itself blocked by anything, and with something downstream
+        of it whose alerts are being held back. On an estate where a
+        database took an API and a checkout page down with it, this is the
+        one row that names the thing to go and fix.
+        """
+        return (
+            self.state == MonitorState.DOWN
+            and not self.is_blocked
+            and not self.paused
+            and self.dependents_held_back > 0
+        )
+
+
+def collect_dependency_rows(
+    session: Session, *, monitor: Optional[str] = None
+) -> List[DependencyRow]:
+    """Build one row per monitor involved in the dependency graph.
+
+    Built from the monitors table rather than from the config, like every
+    other report that has a state to show: the config says what should
+    depend on what, and only the database knows what is down.
+
+    Monitors that neither declare a dependency nor are one are left out
+    entirely. An estate of forty services with three edges between them
+    should print three or four rows, not forty mostly-empty ones, and the
+    empty-table message says as much.
+
+    Rows come out upstreams-first, so the chain reads down the page in the
+    direction the failure travels.
+
+    `monitor` narrows the report to that monitor's own neighbourhood --
+    itself, everything it depends on, and everything that depends on it --
+    because the question being asked of one monitor is either "why is this
+    quiet" or "what else does this take with it", and both are answered by
+    the same set.
+    """
+    monitors = {m.name: m for m in queries.list_monitors(session)}
+    graph = graph_of(monitors.values())
+    down = {name for name, row in monitors.items() if row.blocks_dependents}
+    blocked_by = {name: graph.blocking(name, down) for name in graph.names}
+    # The dependents whose alerts are actually being suppressed: failing,
+    # live, and with something down underneath them. A healthy monitor over
+    # a broken database is not one of them, and counting it would have the
+    # database's row claiming to be silencing pages nobody wants to send.
+    held_back = {
+        name
+        for name, upstreams in blocked_by.items()
+        if upstreams and name in monitors and monitors[name].blocks_dependents
+    }
+
+    involved = [name for name in graph.order() if graph.direct(name) or graph.dependents(name)]
+    if monitor is not None:
+        neighbourhood = {monitor, *graph.upstream(monitor), *graph.downstream(monitor)}
+        involved = [name for name in involved if name in neighbourhood]
+
+    rows: List[DependencyRow] = []
+    for name in involved:
+        row = monitors.get(name)
+        if row is None:
+            continue
+        rows.append(
+            DependencyRow(
+                name=name,
+                state=row.state,
+                depends_on=graph.direct(name),
+                blocked_by=blocked_by[name],
+                dependents_held_back=sum(
+                    1
+                    for dependent in graph.downstream(name)
+                    if dependent in held_back and name in blocked_by[dependent]
+                ),
+                paused=row.is_paused,
+            )
+        )
+    return rows
+
+
+def _dependency_note(row: DependencyRow) -> str:
+    """The one thing worth saying about a dependency row.
+
+    Ordered by what an operator does about it. A paused monitor is not
+    participating at all, so nothing else on the row means anything. A
+    blocked one explains a silence. A root cause is the row to act on, and
+    says how much else is waiting on it.
+    """
+    if row.paused:
+        return "paused, not in config"
+    if row.alerts_held_back:
+        return "alerts held back"
+    if row.is_root_cause:
+        return f"root cause, {row.dependents_held_back} dependent(s) held back"
+    return ""
+
+
+def _dependency_cells(row: DependencyRow) -> List[str]:
+    return [
+        row.name,
+        row.state.value,
+        describe_chain(list(row.depends_on)),
+        describe_chain(list(row.blocked_by)),
+        _dependency_note(row),
+    ]
+
+
+def format_dependency_table(rows: Sequence[DependencyRow]) -> str:
+    """Render the dependency graph as an aligned plain-text table."""
+    if not rows:
+        return "No monitor declares a dependency."
+
+    table = [list(_DEPENDENCY_COLUMNS)] + [_dependency_cells(row) for row in rows]
+    widths = [
+        max(len(line[column]) for line in table) for column in range(len(_DEPENDENCY_COLUMNS))
+    ]
+    return "\n".join(
+        "  ".join(cell.ljust(width) for cell, width in zip(line, widths)).rstrip()
+        for line in table
+    )
+
+
+def format_dependency_summary(rows: Sequence[DependencyRow]) -> str:
+    """One-line tally of the graph, and of what it is currently suppressing.
+
+    The blocked count is the number worth printing even when it is zero:
+    "nothing is being held back" is the reassurance someone reading this
+    report during an incident came for, and an absent line would leave them
+    counting rows for it.
+    """
+    blocked = sum(1 for row in rows if row.alerts_held_back)
+    roots = sum(1 for row in rows if row.is_root_cause)
+    parts = [f"{len(rows)} monitor(s) in the dependency graph", f"{blocked} held back"]
+    if roots:
+        parts.append(f"{roots} root cause(s)")
+    return ", ".join(parts)
+
+
+def dependency_graph(session: Session) -> DependencyGraph:
+    """The graph as the monitors table currently holds it.
+
+    Exposed for the dashboard, which needs the edges themselves rather than
+    the rendered rows above, and has no config to build them from.
+    """
+    return graph_of(queries.list_monitors(session))
