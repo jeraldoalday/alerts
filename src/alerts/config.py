@@ -15,6 +15,8 @@ from typing import Any, Dict, List, Literal, Optional, Union
 import yaml
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from alerts.dependencies import DependencyGraph, describe_cycle, graph_of
+from alerts.dependencies import normalise_names as normalise_dependencies
 from alerts.envsubst import expand as expand_env
 from alerts.envsubst import expand_mapping as expand_env_mapping
 from alerts.envsubst import missing as missing_env_vars
@@ -183,6 +185,12 @@ class MonitorConfig(BaseModel):
     # dashboard, and `/metrics`.
     slo_target: Optional[float] = Field(default=None, gt=MIN_TARGET, le=MAX_TARGET)
     slo_window_days: int = Field(default=DEFAULT_WINDOW_DAYS, ge=1, le=365)
+    # The monitors this one needs in order to be healthy. Naming them
+    # changes nothing about how this monitor is checked -- it changes who
+    # gets paged when it fails: while an upstream is down, this monitor's
+    # own alerts are held back, because the page that names the database is
+    # the one worth reading.
+    depends_on: List[str] = Field(default_factory=list)
     # Free-form labels for grouping: `prod`, `payments`, `eu-west-1`. They
     # carry no behaviour of their own -- nothing schedules, alerts, or
     # escalates differently because of a tag -- they exist so a report can be
@@ -198,6 +206,39 @@ class MonitorConfig(BaseModel):
                 f"unsupported HTTP method {value!r}, expected one of {list(HTTP_METHODS)}"
             )
         return normalised
+
+    @field_validator("depends_on")
+    @classmethod
+    def dependencies_are_named_once(cls, names: List[str]) -> List[str]:
+        """Strip and de-duplicate the dependency list, keeping its order.
+
+        Not lowercased, unlike tags: a dependency names one specific
+        monitor rather than a label several of them share, and folding
+        would let `depends_on: [DB]` resolve to a monitor called `db` that
+        every other lookup in this project treats as a different row. A
+        name that matches nothing is refused below instead.
+        """
+        for raw in names:
+            if not raw.strip():
+                raise ValueError("depends_on entries must not be blank")
+        return list(normalise_dependencies(names))
+
+    @model_validator(mode="after")
+    def a_monitor_does_not_depend_on_itself(self) -> "MonitorConfig":
+        """Reject a monitor naming itself as a dependency.
+
+        It reads as a harmless no-op and is not one: the monitor would
+        suppress its own alerts for as long as it was down, which is
+        exactly the outage nobody would then hear about. Caught here rather
+        than by the cycle check below so the error names the mistake
+        instead of describing a one-element loop.
+        """
+        if self.name in self.depends_on:
+            raise ValueError(
+                f"monitor {self.name!r} depends on itself, which would suppress "
+                "its own alerts for the whole time it was down"
+            )
+        return self
 
     @field_validator("tags")
     @classmethod
@@ -511,6 +552,40 @@ class AppConfig(BaseModel):
         wanted = normalise_tag(tag)
         return [monitor for monitor in self.monitors if wanted in monitor.tags]
 
+    def dependency_graph(self) -> DependencyGraph:
+        """The declared dependencies between the configured monitors.
+
+        Built from the config rather than the database so the commands that
+        open no database at all -- `alerts check`, config validation -- ask
+        the same graph the scheduler does.
+        """
+        return graph_of(self.monitors)
+
+    def validate_monitor_dependency_refs(self) -> None:
+        """Reject a dependency naming a monitor that doesn't exist, or a cycle.
+
+        Both failures are silent and expensive if they are allowed through.
+        An unknown name looks configured and suppresses nothing, so the one
+        outage the operator set the dependency up for still pages every
+        service behind it. A cycle is worse: every monitor in it is
+        upstream of every other, so the first one to go down holds back the
+        alerts for all of them, and the estate goes quiet at the moment it
+        should be loudest.
+        """
+        graph = self.dependency_graph()
+        known = {monitor.name for monitor in self.monitors}
+        for name, unknown in sorted(graph.unknown_references(known).items()):
+            raise ValueError(
+                f"monitor {name!r} depends on unknown monitor(s): {unknown}"
+            )
+        cycle = graph.cycle()
+        if cycle is not None:
+            raise ValueError(
+                "monitors depend on each other in a cycle: "
+                f"{describe_cycle(cycle)} -- while any one of them is down it "
+                "would hold back the alerts for all of them"
+            )
+
     def validate_monitor_channel_refs(self) -> None:
         known = self.channel_names()
         for monitor in self.monitors:
@@ -606,6 +681,7 @@ def load_config(path: Union[str, Path]) -> AppConfig:
         config.validate_monitor_header_env_refs()
         config.validate_channel_env_refs()
         config.validate_maintenance_monitor_refs()
+        config.validate_monitor_dependency_refs()
     except Exception as exc:  # pydantic.ValidationError or ValueError
         raise ConfigError(f"invalid config in {config_path}: {exc}") from exc
 
