@@ -17,10 +17,10 @@ from alerts.models import Monitor, MonitorState, MonitorType
 from alerts.reporting import (
     DependencyRow,
     collect_dependency_rows,
-    dependency_graph,
     format_dependency_summary,
     format_dependency_table,
 )
+from alerts.web.queries import dependency_graph
 
 
 def _monitor(session, name, state=MonitorState.UP, depends_on=(), **overrides):

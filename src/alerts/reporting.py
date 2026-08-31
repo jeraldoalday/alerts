@@ -25,7 +25,7 @@ from typing import List, Optional, Sequence
 from sqlalchemy.orm import Session
 
 from alerts.config import MaintenanceWindowConfig
-from alerts.dependencies import DependencyGraph, describe_chain, graph_of
+from alerts.dependencies import describe_chain
 from alerts.maintenance import active_occurrence, describe_schedule, next_occurrence
 from alerts.models import Incident, IncidentState, MonitorState
 from alerts.probe import ProbeResult
@@ -833,7 +833,7 @@ def collect_dependency_rows(
     the same set.
     """
     monitors = {m.name: m for m in queries.list_monitors(session)}
-    graph = graph_of(monitors.values())
+    graph = queries.dependency_graph(session)
     down = {name for name, row in monitors.items() if row.blocks_dependents}
     blocked_by = {name: graph.blocking(name, down) for name in graph.names}
     # The dependents whose alerts are actually being suppressed: failing,
@@ -929,12 +929,3 @@ def format_dependency_summary(rows: Sequence[DependencyRow]) -> str:
     if roots:
         parts.append(f"{roots} root cause(s)")
     return ", ".join(parts)
-
-
-def dependency_graph(session: Session) -> DependencyGraph:
-    """The graph as the monitors table currently holds it.
-
-    Exposed for the dashboard, which needs the edges themselves rather than
-    the rendered rows above, and has no config to build them from.
-    """
-    return graph_of(queries.list_monitors(session))

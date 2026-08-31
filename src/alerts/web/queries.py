@@ -3,11 +3,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Dict, Iterable, List, Optional, Sequence
+from typing import Dict, Iterable, List, Optional, Sequence, Set
 
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
+from alerts.dependencies import DependencyGraph, graph_of
 from alerts.models import CheckResult, Incident, IncidentState, Monitor
 from alerts.slo import ErrorBudget, compute_error_budget
 from alerts.timeutil import as_utc_naive, utcnow
@@ -49,6 +50,59 @@ def known_tags(session: Session) -> List[str]:
     """
     found = {tag for monitor in session.query(Monitor).all() for tag in monitor.tags or []}
     return sorted(found)
+
+
+def dependency_graph(session: Session) -> DependencyGraph:
+    """The dependency graph as the monitors table currently holds it.
+
+    Built from the rows rather than from the config, because every surface
+    that asks for it also has a state to show, and only the database has
+    one. It is also the honest answer for an install whose config has been
+    edited but not yet synced: the graph the scheduler is acting on is the
+    one written down here.
+    """
+    return graph_of(list_monitors(session))
+
+
+def down_monitor_names(session: Session) -> Set[str]:
+    """The monitors currently down and live enough to hold back a dependent.
+
+    The rule itself lives on `Monitor.blocks_dependents`, so this is only
+    the query around it -- a full pass over a table with one row per
+    monitored service, in the same spirit as the tag filter above.
+    """
+    return {
+        monitor.name
+        for monitor in session.query(Monitor).all()
+        if monitor.blocks_dependents
+    }
+
+
+def blocking_upstreams(
+    session: Session, monitors: Optional[Iterable[Monitor]] = None
+) -> Dict[str, List[str]]:
+    """Each monitor's down upstreams, keyed by name, skipping those with none.
+
+    The shape the page and the exposition both want: they walk their own
+    rows and look one monitor up at a time, and a monitor with nothing
+    down above it is simply absent rather than mapped to an empty list.
+
+    Note this says nothing about whether an alert is actually being
+    suppressed -- a healthy service above a broken database appears here
+    and has nothing to page about. That distinction belongs to whoever is
+    rendering, which knows the monitor's own state.
+    """
+    graph = dependency_graph(session)
+    if not graph:
+        return {}
+    down = down_monitor_names(session)
+    rows = list(monitors) if monitors is not None else list(list_monitors(session))
+    blocking: Dict[str, List[str]] = {}
+    for monitor in rows:
+        upstreams = graph.blocking(monitor.name, down)
+        if upstreams:
+            blocking[monitor.name] = upstreams
+    return blocking
 
 
 def get_monitor_by_name(session: Session, name: str) -> Optional[Monitor]:
