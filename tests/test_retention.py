@@ -188,6 +188,19 @@ def test_recent_resolved_incidents_are_kept(db):
         assert prune_resolved_incidents(session, older_than_days=90, now=NOW).incidents_deleted == 0
 
 
+def test_null_age_keeps_resolved_incidents_forever(db):
+    with db.session() as session:
+        monitor = _monitor(session)
+        _resolved_incident(session, monitor.id, days_ago=3650)
+
+    with db.session() as session:
+        summary = prune_resolved_incidents(session, older_than_days=None, now=NOW)
+
+    assert summary == PruneSummary()
+    with db.session() as session:
+        assert session.query(Incident).count() == 1
+
+
 def test_prune_applies_the_whole_policy(db):
     with db.session() as session:
         monitor = _monitor(session)
