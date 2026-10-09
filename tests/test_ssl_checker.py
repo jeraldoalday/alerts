@@ -1,7 +1,9 @@
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 from alerts.checkers.base import CheckRequest
-from alerts.checkers.ssl import SslChecker, _evaluate_certificate
+from alerts.checkers.ssl import SslChecker, _evaluate_certificate, _split_host_port
 
 
 def _cert(not_after: datetime) -> dict:
@@ -65,3 +67,29 @@ async def test_ssl_checker_uses_injected_certificate():
     outcome = await checker.check(CheckRequest(target="example.com", timeout_seconds=2))
 
     assert outcome.success is True
+
+
+async def test_ssl_checker_unwraps_a_bracketed_ipv6_host():
+    # The brackets are IPv6's own way of telling its colons apart from the
+    # one separating the port -- left on, the host handed to the fetcher
+    # would be "[::1]", which resolves to nothing.
+    seen = {}
+
+    async def fake_fetch(host: str, port: int):
+        seen["host"], seen["port"] = host, port
+        return _cert(datetime.now(timezone.utc) + timedelta(days=10))
+
+    checker = SslChecker(fetch_certificate=fake_fetch)
+    outcome = await checker.check(CheckRequest(target="[::1]:8443", timeout_seconds=2))
+
+    assert outcome.success is True
+    assert seen == {"host": "::1", "port": 8443}
+
+
+def test_split_host_port_defaults_a_bare_bracketed_host_to_443():
+    assert _split_host_port("[::1]") == ("::1", 443)
+
+
+def test_split_host_port_rejects_an_unterminated_bracket():
+    with pytest.raises(ValueError, match="must be"):
+        _split_host_port("[::1")

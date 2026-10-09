@@ -1,7 +1,9 @@
 import asyncio
 
+import pytest
+
 from alerts.checkers.base import CheckRequest
-from alerts.checkers.tcp import TcpChecker
+from alerts.checkers.tcp import TcpChecker, _split_host_port
 
 
 async def test_tcp_checker_succeeds_when_port_is_open():
@@ -38,3 +40,20 @@ async def test_tcp_checker_rejects_malformed_target():
 
     assert outcome.success is False
     assert "host:port" in outcome.error_message
+
+
+def test_split_host_port_unwraps_a_bracketed_ipv6_host():
+    # The brackets are IPv6's own way of telling its colons apart from the
+    # one separating the port -- left on, the host passed to
+    # open_connection would be "[::1]", which resolves to nothing.
+    assert _split_host_port("[::1]:443") == ("::1", 443)
+
+
+def test_split_host_port_rejects_a_bracketed_host_with_no_port():
+    with pytest.raises(ValueError, match="host:port"):
+        _split_host_port("[::1]")
+
+
+def test_split_host_port_rejects_an_unterminated_bracket():
+    with pytest.raises(ValueError, match="host:port"):
+        _split_host_port("[::1")
