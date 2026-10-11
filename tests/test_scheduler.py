@@ -120,6 +120,25 @@ class _FakeChecker:
         return self._outcome
 
 
+async def _wait_until(predicate, *, timeout: float = 5.0, interval: float = 0.01) -> None:
+    """Poll `predicate` until it's true, rather than sleeping a fixed amount.
+
+    A monitor on a 1s interval needs its second check to land inside the
+    window a test waits, and a fixed `sleep(1.2)` gives that second check
+    only ~0.2s of slack to actually run -- plenty on a quiet machine, but
+    exactly the sleep a loaded CI runner or a coverage-instrumented run
+    eats into, turning "the scheduler checked again" into a flake about
+    how fast the box happened to be. Polling waits only as long as it
+    actually takes, with a timeout generous enough that a real failure to
+    check again still fails the test rather than hanging it.
+    """
+    deadline = asyncio.get_event_loop().time() + timeout
+    while not predicate():
+        if asyncio.get_event_loop().time() >= deadline:
+            raise AssertionError(f"condition not met within {timeout}s")
+        await asyncio.sleep(interval)
+
+
 async def test_scheduler_runs_check_and_persists_result(db):
     with db.session() as session:
         session.add(_monitor(interval_seconds=60))
@@ -226,7 +245,7 @@ async def test_scheduler_runs_checks_again_after_interval_elapses(db):
     scheduler = Scheduler(db, checkers={MonitorType.HTTP: fake})
 
     run_task = asyncio.create_task(scheduler.run())
-    await asyncio.sleep(1.2)
+    await _wait_until(lambda: fake.calls >= 2)
     await scheduler.stop()
     await run_task
 
@@ -386,7 +405,7 @@ async def test_scheduler_does_not_resend_within_cooldown_on_later_checks(db):
     )
 
     run_task = asyncio.create_task(scheduler.run())
-    await asyncio.sleep(1.2)
+    await _wait_until(lambda: fake_checker.calls >= 2)
     await scheduler.stop()
     await run_task
 
@@ -449,7 +468,7 @@ async def test_monitor_loop_keeps_going_after_an_unexpected_checker_exception(db
     scheduler = Scheduler(db, checkers={MonitorType.HTTP: checker})
 
     run_task = asyncio.create_task(scheduler.run())
-    await asyncio.sleep(1.2)
+    await _wait_until(lambda: checker.calls >= 2)
     await scheduler.stop()
     await run_task
 
