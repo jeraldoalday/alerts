@@ -51,16 +51,21 @@ def _recurring_occurrences(
 ) -> List[WindowOccurrence]:
     """The occurrences of a recurring window that could contain `moment`.
 
-    Two candidates are considered: the one starting on `moment`'s own date
-    and the one starting the day before. The second is what makes a window
-    running past midnight work -- 23:00 for two hours is still active at
-    00:30, and that occurrence belongs to the previous day, which is also
-    the day its `days` filter is matched against.
+    The candidates are the one starting on `moment`'s own date and one
+    starting on each of the preceding days the window's duration could still
+    be running from. A one-hour window only needs yesterday's -- that's what
+    makes a window running past midnight work, 23:00 for two hours still
+    active at 00:30 -- but nothing stops `duration_minutes` from exceeding a
+    day, and a multi-day window (a long weekend change freeze, say) can still
+    be running from a start several days back. Rounding the day count up
+    rather than down means a window ending exactly on a day boundary is still
+    found by the occurrence that starts it.
     """
     assert window.start is not None and window.duration_minutes is not None
     duration = timedelta(minutes=window.duration_minutes)
+    days_back = -(-window.duration_minutes // (24 * 60))  # ceil division
     occurrences = []
-    for day_offset in (0, -1):
+    for day_offset in range(0, -days_back - 1, -1):
         start_date = (moment + timedelta(days=day_offset)).date()
         starts_at = datetime.combine(start_date, window.start)
         if window.days and _weekday_name(starts_at) not in window.days:

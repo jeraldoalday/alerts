@@ -195,6 +195,23 @@ def test_a_days_filter_matches_the_day_the_window_starts_on():
     assert is_in_maintenance([window], "web", now=_at(7, 23, 30)) is False
 
 
+def test_a_multi_day_window_is_still_found_more_than_a_day_after_it_started():
+    """Nothing caps `duration_minutes` at a day, so a window can span several.
+
+    A long-weekend change freeze starting Friday for 72 hours is still
+    running on the Sunday, even though the occurrence that covers it started
+    two days earlier -- the `days` filter still matches against Friday, the
+    day that occurrence starts on, not the day being asked about.
+    """
+    window = _recurring(start="00:00", duration_minutes=3 * 24 * 60, days=["fri"])
+
+    # 2026-09-04 is a Friday; the window runs through 2026-09-07 00:00.
+    assert is_in_maintenance([window], "web", now=_at(4, 0, 0)) is True
+    assert is_in_maintenance([window], "web", now=_at(6, 12, 0)) is True  # Sunday
+    assert is_in_maintenance([window], "web", now=_at(7, 0, 0)) is False  # ended
+    assert is_in_maintenance([window], "web", now=_at(3, 23, 0)) is False  # before
+
+
 def test_a_days_filter_excludes_other_days():
     window = _recurring(days=["sun"])
 
