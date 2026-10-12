@@ -93,3 +93,8 @@ def test_split_host_port_defaults_a_bare_bracketed_host_to_443():
 def test_split_host_port_rejects_an_unterminated_bracket():
     with pytest.raises(ValueError, match="must be"):
         _split_host_port("[::1")
+
+
+def test_split_host_port_rejects_a_non_numeric_port_after_a_bracketed_host():
+    with pytest.raises(ValueError, match="must be"):
+        _split_host_port("[::1]:https")
