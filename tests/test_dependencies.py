@@ -112,6 +112,14 @@ def test_depth_counts_hops_to_the_furthest_thing_needed():
     assert graph.depth("web") == 2
 
 
+def test_depth_through_a_diamond_counts_the_longest_path_once():
+    # checkout reaches db two ways: directly, and through api. The shorter
+    # path must not win just because it's seen first -- depth has to keep
+    # going through db the second time to still find cache beyond api.
+    graph = _estate()
+    assert graph.depth("checkout") == 2
+
+
 def test_order_puts_upstreams_before_the_monitors_that_need_them():
     order = _estate().order()
     assert order.index("db") < order.index("api") < order.index("web")
