@@ -190,6 +190,10 @@ def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         help="Only windows covering this monitor, including estate-wide ones.",
     )
     maintenance_parser.add_argument(
+        "--tag",
+        help="Only windows covering a monitor carrying this tag, including estate-wide ones.",
+    )
+    maintenance_parser.add_argument(
         "--exit-code",
         action="store_true",
         help="Exit 1 if no window is currently active, for gating a deploy script.",
@@ -468,7 +472,9 @@ def _incidents(
     return 1 if use_exit_code and any(row.is_open for row in rows) else 0
 
 
-def _maintenance(config_path: str, monitor: Optional[str], use_exit_code: bool) -> int:
+def _maintenance(
+    config_path: str, monitor: Optional[str], tag: Optional[str], use_exit_code: bool
+) -> int:
     """Print the maintenance window table, returning the process exit code.
 
     Reads only the config -- no database is opened, since a window is a
@@ -477,9 +483,28 @@ def _maintenance(config_path: str, monitor: Optional[str], use_exit_code: bool) 
     in front of a deploy script fails unless that service is actually covered
     right now, which catches the window that was configured for the wrong
     weekday before the pages start rather than after.
+
+    `--tag` narrows it the same way `--monitor` does, but to every monitor
+    carrying that tag at once -- an estate-wide window still counts, since it
+    covers them whether or not it names any monitor. Both narrow together, as
+    everywhere else a `--monitor` and a `--tag` can be given side by side.
     """
     config = load_config(config_path)
-    rows = collect_maintenance_rows(config.maintenance, monitor=monitor)
+
+    if monitor is None and tag is None:
+        rows = collect_maintenance_rows(config.maintenance)
+    else:
+        subjects = select_monitors(config.monitors, monitor=monitor, tag=tag)
+        if not subjects:
+            print(f"No monitor {_describe_selection(monitor, tag)} in {config_path}.")
+            return 1 if use_exit_code else 0
+        rows = []
+        seen = set()
+        for subject in subjects:
+            for row in collect_maintenance_rows(config.maintenance, monitor=subject.name):
+                if row.name not in seen:
+                    seen.add(row.name)
+                    rows.append(row)
 
     print(format_maintenance_table(rows))
     print()
@@ -570,7 +595,9 @@ def main(argv: Optional[List[str]] = None) -> int:
             use_exit_code=args.exit_code,
         )
     elif args.command == "maintenance":
-        return _maintenance(args.config, monitor=args.monitor, use_exit_code=args.exit_code)
+        return _maintenance(
+            args.config, monitor=args.monitor, tag=args.tag, use_exit_code=args.exit_code
+        )
     elif args.command == "prune":
         _prune(args.config, dry_run=args.dry_run)
     return 0

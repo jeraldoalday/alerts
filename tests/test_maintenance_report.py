@@ -170,6 +170,7 @@ def test_parse_args_maintenance_defaults():
     assert args.command == "maintenance"
     assert args.config == "config.yaml"
     assert args.monitor is None
+    assert args.tag is None
     assert args.exit_code is False
 
 
@@ -178,6 +179,12 @@ def test_parse_args_maintenance_accepts_a_monitor_filter():
 
     assert args.monitor == "api"
     assert args.exit_code is True
+
+
+def test_parse_args_maintenance_accepts_a_tag_filter():
+    args = cli._parse_args(["maintenance", "--tag", "prod"])
+
+    assert args.tag == "prod"
 
 
 def test_main_maintenance_prints_every_window(tmp_path, capsys):
@@ -199,6 +206,89 @@ def test_main_maintenance_filters_by_monitor(tmp_path, capsys):
     assert exit_code == 0
     assert "freeze" in output
     assert "api-change" not in output
+
+
+TAGGED_CONFIG = """
+monitors:
+  - name: web
+    type: http
+    target: https://example.com
+    tags: [prod]
+  - name: api
+    type: http
+    target: https://api.example.com
+    tags: [payments]
+
+maintenance:
+  - name: freeze
+    start: "00:00"
+    duration_minutes: 1440
+  - name: api-change
+    monitors: [api]
+    starts_at: 2026-09-01T01:00:00Z
+    ends_at: 2026-09-01T05:00:00Z
+"""
+
+
+def test_main_maintenance_filters_by_tag(tmp_path, capsys):
+    exit_code = cli.main(
+        ["maintenance", "--config", _write_config(tmp_path, TAGGED_CONFIG), "--tag", "payments"]
+    )
+
+    output = capsys.readouterr().out
+    assert exit_code == 0
+    assert "freeze" in output
+    assert "api-change" in output
+
+
+def test_main_maintenance_filters_by_tag_keeps_estate_wide_windows_once(tmp_path, capsys):
+    """An estate-wide window must not be listed once per monitor the tag matches."""
+    config = _write_config(
+        tmp_path,
+        TAGGED_CONFIG.replace("tags: [payments]", "tags: [prod]"),
+    )
+
+    exit_code = cli.main(["maintenance", "--config", config, "--tag", "prod"])
+
+    output = capsys.readouterr().out
+    assert exit_code == 0
+    assert output.count("freeze") == 1
+
+
+def test_main_maintenance_tag_and_monitor_narrow_together(tmp_path, capsys):
+    exit_code = cli.main(
+        [
+            "maintenance",
+            "--config",
+            _write_config(tmp_path, TAGGED_CONFIG),
+            "--monitor",
+            "web",
+            "--tag",
+            "payments",
+            "--exit-code",
+        ]
+    )
+
+    output = capsys.readouterr().out
+    assert exit_code == 1
+    assert "No monitor named 'web' and tagged 'payments'" in output
+
+
+def test_main_maintenance_unknown_tag_reports_rather_than_an_empty_table(tmp_path, capsys):
+    exit_code = cli.main(
+        [
+            "maintenance",
+            "--config",
+            _write_config(tmp_path, TAGGED_CONFIG),
+            "--tag",
+            "nope",
+            "--exit-code",
+        ]
+    )
+
+    output = capsys.readouterr().out
+    assert exit_code == 1
+    assert "No monitor tagged 'nope'" in output
 
 
 def test_main_maintenance_reports_no_windows(tmp_path, capsys):

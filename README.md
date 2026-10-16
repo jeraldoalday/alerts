@@ -230,8 +230,9 @@ gateway-migration  2026-09-01T01:00 to 2026-09-01T05:00 UTC  api-gateway  in 11d
 ```
 
 `--monitor NAME` narrows it to the windows covering one service (estate-wide
-windows included), and `--exit-code` exits 1 when nothing is active, so a
-deploy script can gate on being inside a window:
+windows included), `--tag NAME` does the same for every monitor carrying
+that tag, and `--exit-code` exits 1 when nothing is active, so a deploy
+script can gate on being inside a window:
 
 ```bash
 alerts maintenance --config config.yaml --monitor api-gateway --exit-code
