@@ -6,6 +6,8 @@ each monitor's state (up / degraded / down), and notifies Slack, email, or
 a generic webhook when something changes. A read-only web dashboard shows
 current status, uptime, and incident history.
 
+> **How this project is built:** I develop this tool with AI coding agents. I decide how monitoring and alerting should behave, review each change and its tests, and merge what holds up.
+
 ## Status
 
 Early development. Current state:
