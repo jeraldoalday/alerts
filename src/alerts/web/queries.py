@@ -133,6 +133,7 @@ def list_incidents(
     session: Session,
     *,
     monitor_id: Optional[int] = None,
+    monitor_ids: Optional[Iterable[int]] = None,
     since: Optional[datetime] = None,
     open_only: bool = False,
     limit: int = 50,
@@ -142,6 +143,11 @@ def list_incidents(
     Unlike `recent_incidents`, which answers "what has happened to this one
     service", this is the estate-wide view an incident report is built from,
     so the monitor filter is optional and a time window is available.
+
+    `monitor_id` and `monitor_ids` are separate parameters rather than one
+    that accepts either shape, so a single-monitor caller doesn't have to
+    wrap its id in a list just to satisfy the type. `monitor_id` wins if
+    both are somehow given.
 
     `since` is normalised to naive UTC before it is bound: the stored
     timestamps come back from SQLite without tzinfo, and comparing them
@@ -162,6 +168,8 @@ def list_incidents(
     query = session.query(Incident)
     if monitor_id is not None:
         query = query.filter(Incident.monitor_id == monitor_id)
+    elif monitor_ids is not None:
+        query = query.filter(Incident.monitor_id.in_(monitor_ids))
     if since is not None:
         query = query.filter(
             or_(

@@ -145,9 +145,10 @@ api-gateway  2026-08-21 07:00  42m           resolved  expected status 200, got 
 
 The window is the last 7 days by default; `--days 30` widens it and `--days 0`
 reaches as far back as retention has kept. `--monitor NAME` narrows it to one
-service, `--open` lists only what hasn't recovered, and `--exit-code` exits 1
-while any reported incident is open, so a deploy script can refuse to ship
-into an ongoing outage.
+service, `--tag NAME` narrows it to every monitor carrying that tag, and the
+two narrow together when both are given. `--open` lists only what hasn't
+recovered, and `--exit-code` exits 1 while any reported incident is open, so
+a deploy script can refuse to ship into an ongoing outage.
 
 Mean recovery covers the resolved incidents only. An open one hasn't
 recovered, and folding its running duration into the average would make an

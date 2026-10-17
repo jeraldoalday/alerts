@@ -155,6 +155,7 @@ def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     )
     incidents_parser.add_argument("--config", default="config.yaml", help="Path to config.yaml")
     incidents_parser.add_argument("--monitor", help="Only incidents for this monitor.")
+    incidents_parser.add_argument("--tag", help="Only incidents for monitors carrying this tag.")
     incidents_parser.add_argument(
         "--days",
         type=_bounded_int(0, MAX_REPORT_DAYS),
@@ -436,6 +437,7 @@ def _incidents(
     config_path: str,
     *,
     monitor: Optional[str],
+    tag: Optional[str],
     days: int,
     limit: int,
     open_only: bool,
@@ -447,6 +449,14 @@ def _incidents(
     breaking, which is the question asked in a Monday morning review rather
     than during an outage. Both read the same live database without starting
     a scheduler.
+
+    `--tag` narrows it to every monitor carrying that tag, the same way it
+    narrows `alerts status`, and combines with `--monitor` rather than
+    overriding it. A `--monitor` or `--tag` matching nothing reports zero
+    incidents rather than erroring, the same treatment an unknown monitor
+    name already got: the database, not the config, is what incidents are
+    read from, and a group that is clean looks identical to one that was
+    mistyped either way.
 
     `--days 0` is the escape hatch for "everything": the window becomes
     unbounded and the report reaches as far back as retention has kept,
@@ -460,6 +470,7 @@ def _incidents(
         rows = collect_incident_rows(
             session,
             monitor=monitor,
+            tag=tag,
             since_days=days if days > 0 else None,
             open_only=open_only,
             limit=limit,
@@ -589,6 +600,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         return _incidents(
             args.config,
             monitor=args.monitor,
+            tag=args.tag,
             days=args.days,
             limit=args.limit,
             open_only=args.open_only,

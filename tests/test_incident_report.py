@@ -37,12 +37,13 @@ def _clock_now() -> datetime:
     return as_utc_naive(utcnow())
 
 
-def _monitor(session, name: str = "site") -> Monitor:
+def _monitor(session, name: str = "site", *, tags=None) -> Monitor:
     monitor = Monitor(
         name=name,
         type=MonitorType.HTTP,
         target="https://example.com",
         state=MonitorState.UP,
+        tags=list(tags) if tags is not None else [],
     )
     session.add(monitor)
     session.flush()
@@ -178,6 +179,51 @@ def test_an_unknown_monitor_name_reports_nothing_rather_than_erroring(db):
 
     with db.session() as session:
         assert collect_incident_rows(session, monitor="typo", now=NOW) == []
+
+
+def test_the_tag_filter_narrows_to_every_monitor_carrying_it(db):
+    with db.session() as session:
+        api = _monitor(session, "api", tags=["payments"])
+        site = _monitor(session, "site", tags=["web"])
+        _incident(session, api.id, started_ago=timedelta(hours=1), lasted=timedelta(minutes=1))
+        _incident(session, site.id, started_ago=timedelta(hours=2), lasted=timedelta(minutes=1))
+
+    with db.session() as session:
+        rows = collect_incident_rows(session, tag="payments", now=NOW)
+
+    assert [row.monitor for row in rows] == ["api"]
+
+
+def test_an_unknown_tag_reports_nothing_rather_than_erroring(db):
+    with db.session() as session:
+        monitor = _monitor(session, tags=["prod"])
+        _incident(session, monitor.id, started_ago=timedelta(hours=1), lasted=timedelta(minutes=1))
+
+    with db.session() as session:
+        assert collect_incident_rows(session, tag="staging", now=NOW) == []
+
+
+def test_monitor_and_tag_narrow_together(db):
+    with db.session() as session:
+        api = _monitor(session, "api", tags=["payments"])
+        site = _monitor(session, "site", tags=["payments"])
+        _incident(session, api.id, started_ago=timedelta(hours=1), lasted=timedelta(minutes=1))
+        _incident(session, site.id, started_ago=timedelta(hours=2), lasted=timedelta(minutes=1))
+
+    with db.session() as session:
+        rows = collect_incident_rows(session, monitor="api", tag="payments", now=NOW)
+
+    assert [row.monitor for row in rows] == ["api"]
+
+
+def test_a_monitor_not_carrying_the_given_tag_reports_nothing(db):
+    """`--monitor api --tag payments` must not fall back to just `--monitor api`."""
+    with db.session() as session:
+        monitor = _monitor(session, "api", tags=["web"])
+        _incident(session, monitor.id, started_ago=timedelta(hours=1), lasted=timedelta(minutes=1))
+
+    with db.session() as session:
+        assert collect_incident_rows(session, monitor="api", tag="payments", now=NOW) == []
 
 
 def test_open_only_drops_the_resolved_ones(db):
@@ -339,6 +385,7 @@ def test_parse_args_incidents_defaults():
     assert args.command == "incidents"
     assert args.config == "config.yaml"
     assert args.monitor is None
+    assert args.tag is None
     assert args.days == 7
     assert args.limit == 50
     assert args.open_only is False
@@ -347,14 +394,58 @@ def test_parse_args_incidents_defaults():
 
 def test_parse_args_incidents_accepts_every_filter():
     args = cli._parse_args(
-        ["incidents", "--monitor", "api", "--days", "30", "--limit", "5", "--open", "--exit-code"]
+        [
+            "incidents",
+            "--monitor",
+            "api",
+            "--tag",
+            "payments",
+            "--days",
+            "30",
+            "--limit",
+            "5",
+            "--open",
+            "--exit-code",
+        ]
     )
 
     assert args.monitor == "api"
+    assert args.tag == "payments"
     assert args.days == 30
     assert args.limit == 5
     assert args.open_only is True
     assert args.exit_code is True
+
+
+def test_main_incidents_filters_by_tag(tmp_path, capsys):
+    config_path, database_url = _config(tmp_path)
+    database = Database(database_url)
+    database.create_all()
+    with database.session() as session:
+        api = _monitor(session, "api", tags=["payments"])
+        site = _monitor(session, "site", tags=["web"])
+        _incident(
+            session,
+            api.id,
+            started_ago=timedelta(hours=1),
+            lasted=timedelta(minutes=5),
+            anchor=_clock_now(),
+        )
+        _incident(
+            session,
+            site.id,
+            started_ago=timedelta(hours=2),
+            lasted=timedelta(minutes=5),
+            anchor=_clock_now(),
+        )
+
+    exit_code = cli.main(["incidents", "--config", config_path, "--tag", "payments"])
+
+    output = capsys.readouterr().out
+    assert exit_code == 0
+    assert "api" in output
+    assert "site" not in output
+    assert "1 incident(s)" in output
 
 
 def test_main_incidents_prints_a_table_and_a_summary(tmp_path, capsys):

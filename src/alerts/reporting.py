@@ -379,6 +379,7 @@ def collect_incident_rows(
     session: Session,
     *,
     monitor: Optional[str] = None,
+    tag: Optional[str] = None,
     since_days: Optional[int] = 7,
     open_only: bool = False,
     limit: int = 50,
@@ -388,6 +389,11 @@ def collect_incident_rows(
 
     `monitor` names one service; an unknown name yields no rows rather than
     an error, matching how the dashboard treats a name nothing matches.
+    `tag` narrows to every monitor carrying it, the same way `--tag` narrows
+    `alerts status`; both narrow together when given at once, so `--monitor
+    api --tag prod` reports `api` only if it is tagged `prod`. A tag nothing
+    carries is treated the same as an unknown monitor name: no rows, not an
+    error.
     `since_days=None` drops the time window and reports as far back as
     retention has kept. An incident that is still open is reported whatever
     the window says -- see `queries.list_incidents`.
@@ -400,10 +406,26 @@ def collect_incident_rows(
             return []
         monitor_id = found.id
 
+    monitor_ids: Optional[List[int]] = None
+    if tag is not None:
+        tagged_ids = {m.id for m in queries.list_monitors(session, tag=tag)}
+        if monitor_id is not None:
+            if monitor_id not in tagged_ids:
+                return []
+        elif not tagged_ids:
+            return []
+        else:
+            monitor_ids = sorted(tagged_ids)
+
     since = moment - timedelta(days=since_days) if since_days is not None else None
     names = {m.id: m.name for m in queries.list_monitors(session)}
     incidents = queries.list_incidents(
-        session, monitor_id=monitor_id, since=since, open_only=open_only, limit=limit
+        session,
+        monitor_id=monitor_id,
+        monitor_ids=monitor_ids,
+        since=since,
+        open_only=open_only,
+        limit=limit,
     )
     return [
         IncidentRow(
