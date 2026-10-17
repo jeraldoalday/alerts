@@ -97,8 +97,12 @@ async def test_an_empty_body_fails_an_assertion():
     assert outcome.success is False
 
 
-async def test_an_undecodable_body_fails_the_assertion_rather_than_raising():
-    """A body lying about its charset must not look like a connection error."""
+async def test_a_body_with_an_unrecognised_charset_still_gets_matched():
+    """httpx falls back to utf-8 (with replacement characters) for a charset
+
+    it doesn't recognise, rather than raising, so this never reaches the
+    decode-error handling in `_body_text` -- see the test below for that.
+    """
 
     def handler(request):
         return httpx.Response(
@@ -108,6 +112,34 @@ async def test_an_undecodable_body_fails_the_assertion_rather_than_raising():
         )
 
     checker = _checker(handler)
+
+    outcome = await checker.check(_request(expected_body_contains="ok"))
+
+    assert outcome.success is False
+    assert "does not contain" in outcome.error_message
+    assert outcome.status_code == 200
+
+
+async def test_a_body_httpx_itself_cannot_decode_fails_the_assertion_rather_than_raising(
+    monkeypatch,
+):
+    """`_body_text`'s except clause, forced rather than reached naturally.
+
+    httpx's own `.text` is deliberately lenient -- it replaces bad bytes and
+    falls back to utf-8 for a charset it doesn't recognise -- so nothing we
+    can put in a response body or its headers actually makes it raise.
+    `_body_text` still guards against `UnicodeDecodeError`/`LookupError` in
+    case that ever stops being true, or a future httpx (or another HTTP
+    client) is less forgiving; monkeypatching `.text` is the only way to
+    exercise that guard today.
+    """
+
+    def _raise_decode_error(self):
+        raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
+
+    monkeypatch.setattr(httpx.Response, "text", property(_raise_decode_error))
+
+    checker = _checker(lambda request: httpx.Response(200, content=b"anything"))
 
     outcome = await checker.check(_request(expected_body_contains="ok"))
 
