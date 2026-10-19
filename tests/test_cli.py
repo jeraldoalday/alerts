@@ -198,6 +198,7 @@ def test_parse_args_status_defaults():
     assert args.command == "status"
     assert args.config == "config.yaml"
     assert args.checks == 50
+    assert args.monitor is None
     assert args.exit_code is False
 
 

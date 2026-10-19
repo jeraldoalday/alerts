@@ -170,6 +170,28 @@ def test_an_untagged_monitor_leaves_the_column_empty(db):
     assert rows[0].tags == ()
 
 
+def test_the_status_rows_can_be_narrowed_to_a_monitor(db):
+    with db.session() as session:
+        _monitor(session, "api", ["prod"])
+        _monitor(session, "staging-api", ["staging"])
+
+    with db.session() as session:
+        rows = collect_status_rows(session, monitor="api")
+
+    assert [row.name for row in rows] == ["api"]
+
+
+def test_the_status_rows_narrow_by_monitor_and_tag_together(db):
+    with db.session() as session:
+        _monitor(session, "api", ["prod"])
+        _monitor(session, "staging-api", ["prod"])
+
+    with db.session() as session:
+        rows = collect_status_rows(session, monitor="api", tag="staging")
+
+    assert rows == []
+
+
 def test_status_command_filters_by_tag(tmp_path, capsys, db_config):
     config_path, database = db_config
     with database.session() as session:
@@ -201,6 +223,39 @@ def test_an_unmatched_tag_fails_the_gate(tmp_path, capsys, db_config):
         _monitor(session, "api", ["prod"])
 
     assert cli.main(["status", "--config", config_path, "--tag", "nope", "--exit-code"]) == 1
+
+
+def test_status_command_filters_by_monitor(tmp_path, capsys, db_config):
+    config_path, database = db_config
+    with database.session() as session:
+        _monitor(session, "api", ["prod"])
+        _monitor(session, "staging-api", ["staging"])
+
+    assert cli.main(["status", "--config", config_path, "--monitor", "api"]) == 0
+
+    out = capsys.readouterr().out
+    assert "api" in out
+    assert "staging-api" not in out
+
+
+def test_status_command_reports_a_monitor_that_matches_nothing(tmp_path, capsys, db_config):
+    config_path, database = db_config
+    with database.session() as session:
+        _monitor(session, "api", ["prod"])
+
+    assert cli.main(["status", "--config", config_path, "--monitor", "nope"]) == 0
+
+    out = capsys.readouterr().out
+    assert "No monitor named 'nope'." in out
+    assert "No monitors configured." not in out
+
+
+def test_an_unmatched_monitor_fails_the_gate(tmp_path, capsys, db_config):
+    config_path, database = db_config
+    with database.session() as session:
+        _monitor(session, "api", ["prod"])
+
+    assert cli.main(["status", "--config", config_path, "--monitor", "nope", "--exit-code"]) == 1
 
 
 def test_a_down_monitor_outside_the_tag_does_not_fail_the_gate(tmp_path, capsys, db_config):

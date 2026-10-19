@@ -114,6 +114,7 @@ def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         default=50,
         help="How many recent checks per monitor the uptime figure covers (default: 50).",
     )
+    status_parser.add_argument("--monitor", help="Only this monitor.")
     status_parser.add_argument(
         "--tag",
         help="Only monitors carrying this tag.",
@@ -289,7 +290,11 @@ def _check(
 
 
 def _status(
-    config_path: str, checks_window: int, tag: Optional[str], use_exit_code: bool
+    config_path: str,
+    checks_window: int,
+    monitor: Optional[str],
+    tag: Optional[str],
+    use_exit_code: bool,
 ) -> int:
     """Print the status table, returning the process exit code.
 
@@ -298,23 +303,24 @@ def _status(
     opt-in: a status report failing by default would surprise any script that
     just wants the table.
 
-    `tag` narrows it to one group, which is what makes the table readable on
-    an estate large enough to need one.
+    `monitor` and `tag` narrow it the way they do everywhere else, and both
+    narrow rather than override -- which is what makes the table readable on
+    an estate large enough to need either.
     """
     config = load_config(config_path)
     database = Database(config.database.url)
     database.create_all()
 
     with database.session() as session:
-        rows = collect_status_rows(session, checks_window=checks_window, tag=tag)
+        rows = collect_status_rows(session, checks_window=checks_window, monitor=monitor, tag=tag)
 
-    if tag is not None and not rows:
+    if (monitor is not None or tag is not None) and not rows:
         # "No monitors configured." would be a lie -- there are monitors,
-        # none of them carrying this tag. Failed under --exit-code for the
+        # just none matching the filter. Failed under --exit-code for the
         # same reason `alerts check` fails: a script asking whether anything
-        # tagged `prod` is down must not report success because the tag was
-        # mistyped.
-        print(f"No monitor tagged {tag!r}.")
+        # named or tagged this is down must not report success because the
+        # name or tag was mistyped.
+        print(f"No monitor {_describe_selection(monitor, tag)}.")
         return 1 if use_exit_code else 0
 
     print(format_status_table(rows))
@@ -587,6 +593,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         return _status(
             args.config,
             checks_window=args.checks,
+            monitor=args.monitor,
             tag=args.tag,
             use_exit_code=args.exit_code,
         )

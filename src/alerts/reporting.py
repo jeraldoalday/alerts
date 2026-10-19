@@ -136,40 +136,47 @@ def _open_incident(session: Session, monitor_id: int) -> Optional[Incident]:
 
 
 def collect_status_rows(
-    session: Session, *, checks_window: int = 50, tag: Optional[str] = None
+    session: Session,
+    *,
+    checks_window: int = 50,
+    monitor: Optional[str] = None,
+    tag: Optional[str] = None,
 ) -> List[StatusRow]:
     """Build one row per monitor, with uptime over its last `checks_window` checks.
 
-    `tag` narrows the report to one group. A tag nothing carries yields no
-    rows rather than an error, the same as a `--monitor` naming nothing:
-    the summary line underneath says "0 monitor(s)", which is the honest
-    answer to a question about a group that is empty.
+    `monitor` and `tag` narrow the report, and narrow together rather than
+    override, the same as every other report in this module. A filter
+    nothing matches yields no rows rather than an error: the summary line
+    underneath says "0 monitor(s)", which is the honest answer to a
+    question about a group that is empty.
 
     Down upstreams are resolved against the whole estate rather than the
     filtered set: a `--tag payments` table still has to be able to explain
     that its checkout page is quiet because of a database nobody on that
     team tagged.
     """
-    monitors = queries.list_monitors(session, tag=tag)
-    blocked = queries.blocking_upstreams(session, monitors)
+    found_monitors = queries.list_monitors(session, tag=tag)
+    if monitor is not None:
+        found_monitors = [found for found in found_monitors if found.name == monitor]
+    blocked = queries.blocking_upstreams(session, found_monitors)
     rows: List[StatusRow] = []
-    for monitor in monitors:
-        checks = queries.recent_check_results(session, monitor.id, checks_window)
+    for monitor_row in found_monitors:
+        checks = queries.recent_check_results(session, monitor_row.id, checks_window)
         stats = compute_uptime_stats(checks)
-        incident = _open_incident(session, monitor.id)
+        incident = _open_incident(session, monitor_row.id)
         rows.append(
             StatusRow(
-                name=monitor.name,
-                type=monitor.type.value,
-                state=monitor.state,
+                name=monitor_row.name,
+                type=monitor_row.type.value,
+                state=monitor_row.state,
                 uptime_percentage=stats.uptime_percentage,
                 average_latency_ms=stats.average_latency_ms,
                 p95_latency_ms=stats.p95_latency_ms,
                 last_checked_at=checks[0].checked_at if checks else None,
                 open_incident_since=incident.started_at if incident else None,
-                paused=monitor.is_paused,
-                tags=tuple(monitor.tags or ()),
-                blocked_by=tuple(blocked.get(monitor.name, ())),
+                paused=monitor_row.is_paused,
+                tags=tuple(monitor_row.tags or ()),
+                blocked_by=tuple(blocked.get(monitor_row.name, ())),
             )
         )
     return rows

@@ -125,8 +125,9 @@ been broken, and why nobody was paged about it -- see
 about the estate rather than about who got told.
 
 `--exit-code` makes it exit 1 when anything is down, for use as a scripted
-check; without it the command always exits 0. `--tag NAME` narrows it to one
-group -- see [Tags](#tags).
+check; without it the command always exits 0. `--monitor NAME` and `--tag
+NAME` narrow it to one service or one group, and narrow together rather than
+override -- see [Tags](#tags).
 
 Report the incidents behind that status -- what has been breaking, for how
 long, and how quickly it came back:
