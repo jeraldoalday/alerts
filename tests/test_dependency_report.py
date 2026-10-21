@@ -56,6 +56,37 @@ def _config(tmp_path):
     return str(path), f"sqlite:///{db_path}"
 
 
+def _tagged_config(tmp_path):
+    """A config whose monitors match `_estate` and carry tags to filter on."""
+    path = tmp_path / "config.yaml"
+    db_path = tmp_path / "deps.db"
+    path.write_text(
+        f"""
+database:
+  url: sqlite:///{db_path}
+monitors:
+  - name: checkout
+    type: http
+    target: https://checkout.example.com
+    depends_on: [api]
+    tags: [payments]
+  - name: api
+    type: http
+    target: https://api.example.com
+    depends_on: [db]
+    tags: [payments]
+  - name: db
+    type: http
+    target: https://db.example.com
+  - name: marketing
+    type: http
+    target: https://marketing.example.com
+    tags: [content]
+"""
+    )
+    return str(path), f"sqlite:///{db_path}"
+
+
 def test_a_monitor_with_no_edges_is_left_out(db):
     with db.session() as session:
         _estate(session)
@@ -353,3 +384,81 @@ def test_deps_arguments_are_parsed():
 
     assert args.monitor == "api"
     assert args.exit_code is True
+
+
+def test_deps_arguments_accept_a_tag_filter():
+    args = cli._parse_args(["deps", "--tag", "payments"])
+
+    assert args.tag == "payments"
+
+
+def test_main_deps_filters_by_tag(tmp_path, capsys):
+    config_path, database_url = _tagged_config(tmp_path)
+    database = Database(database_url)
+    database.create_all()
+    with database.session() as session:
+        _estate(session)
+
+    exit_code = cli.main(["deps", "--config", config_path, "--tag", "payments"])
+
+    output = capsys.readouterr().out
+    assert exit_code == 0
+    assert "checkout" in output
+    assert "api" in output
+    assert "db" in output
+    assert "marketing" not in output
+
+
+def test_main_deps_filters_by_tag_keeps_the_shared_upstream_once(tmp_path, capsys):
+    """checkout and api both carry `payments` and share `db` upstream -- it
+    must be merged into one row, not printed once per matching monitor."""
+    config_path, database_url = _tagged_config(tmp_path)
+    database = Database(database_url)
+    database.create_all()
+    with database.session() as session:
+        _estate(session)
+
+    exit_code = cli.main(["deps", "--config", config_path, "--tag", "payments"])
+
+    output = capsys.readouterr().out
+    assert exit_code == 0
+    assert output.count("\ndb") == 1
+
+
+def test_main_deps_tag_and_monitor_narrow_together(tmp_path, capsys):
+    config_path, database_url = _tagged_config(tmp_path)
+    database = Database(database_url)
+    database.create_all()
+    with database.session() as session:
+        _estate(session)
+
+    exit_code = cli.main(
+        [
+            "deps",
+            "--config",
+            config_path,
+            "--monitor",
+            "marketing",
+            "--tag",
+            "payments",
+            "--exit-code",
+        ]
+    )
+
+    output = capsys.readouterr().out
+    assert exit_code == 1
+    assert "No monitor named 'marketing' and tagged 'payments'" in output
+
+
+def test_main_deps_unknown_tag_reports_rather_than_an_empty_table(tmp_path, capsys):
+    config_path, database_url = _tagged_config(tmp_path)
+    database = Database(database_url)
+    database.create_all()
+    with database.session() as session:
+        _estate(session)
+
+    exit_code = cli.main(["deps", "--config", config_path, "--tag", "nope", "--exit-code"])
+
+    output = capsys.readouterr().out
+    assert exit_code == 1
+    assert "No monitor tagged 'nope'" in output

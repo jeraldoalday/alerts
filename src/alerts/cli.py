@@ -146,6 +146,10 @@ def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         help="Only this monitor, what it depends on, and what depends on it.",
     )
     deps_parser.add_argument(
+        "--tag",
+        help="Only monitors carrying this tag, what they depend on, and what depends on them.",
+    )
+    deps_parser.add_argument(
         "--exit-code",
         action="store_true",
         help="Exit 1 if any monitor's alerts are currently held back by an upstream.",
@@ -387,7 +391,9 @@ def _slo(
     return 1 if use_exit_code and any(row.is_breaching for row in rows) else 0
 
 
-def _deps(config_path: str, monitor: Optional[str], use_exit_code: bool) -> int:
+def _deps(
+    config_path: str, monitor: Optional[str], tag: Optional[str], use_exit_code: bool
+) -> int:
     """Print the dependency table, returning the process exit code.
 
     Read out of the same database the scheduler writes to, not out of the
@@ -402,13 +408,33 @@ def _deps(config_path: str, monitor: Optional[str], use_exit_code: bool) -> int:
     of it, and is that why it is quiet? `--exit-code` is the scripted form
     of the same question, for a deploy gate that shouldn't run while the
     estate is being kept quiet by something underneath it.
+
+    `--tag` narrows it to the neighbourhood of every monitor carrying that
+    tag at once, merged and de-duplicated the same way `--tag` is resolved
+    for `alerts maintenance`: against the config, since that is where tags
+    live, with each matching monitor's upstreams and downstreams folded into
+    one table rather than printed once per monitor. Combines with
+    `--monitor` rather than overriding it.
     """
     config = load_config(config_path)
     database = Database(config.database.url)
     database.create_all()
 
     with database.session() as session:
-        rows = collect_dependency_rows(session, monitor=monitor)
+        if tag is None:
+            rows = collect_dependency_rows(session, monitor=monitor)
+        else:
+            subjects = select_monitors(config.monitors, monitor=monitor, tag=tag)
+            if not subjects:
+                print(f"No monitor {_describe_selection(monitor, tag)} in {config_path}.")
+                return 1 if use_exit_code else 0
+            rows = []
+            seen = set()
+            for subject in subjects:
+                for row in collect_dependency_rows(session, monitor=subject.name):
+                    if row.name not in seen:
+                        seen.add(row.name)
+                        rows.append(row)
         known_monitors = count_monitors(session)
 
     if not rows and known_monitors == 0 and any(m.depends_on for m in config.monitors):
@@ -423,7 +449,7 @@ def _deps(config_path: str, monitor: Optional[str], use_exit_code: bool) -> int:
         )
         return 0
 
-    if monitor is not None and not rows:
+    if monitor is not None and tag is None and not rows:
         # Distinguished from "nothing declares a dependency", which is what
         # the empty table would otherwise say about a filter that matched
         # nothing -- and failed under --exit-code for the same reason every
@@ -602,7 +628,9 @@ def main(argv: Optional[List[str]] = None) -> int:
             args.config, monitor=args.monitor, tag=args.tag, use_exit_code=args.exit_code
         )
     elif args.command == "deps":
-        return _deps(args.config, monitor=args.monitor, use_exit_code=args.exit_code)
+        return _deps(
+            args.config, monitor=args.monitor, tag=args.tag, use_exit_code=args.exit_code
+        )
     elif args.command == "incidents":
         return _incidents(
             args.config,

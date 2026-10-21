@@ -205,8 +205,9 @@ main-site    down   api-gateway  primary-db     alerts held back
 3 monitor(s) in the dependency graph, 2 held back, 1 root cause(s)
 ```
 
-`--monitor NAME` narrows it to that monitor's neighbourhood, and
-`--exit-code` exits 1 while any alert is being held back. See
+`--monitor NAME` narrows it to that monitor's neighbourhood, `--tag TAG`
+narrows it to the merged neighbourhood of every monitor carrying that tag,
+and `--exit-code` exits 1 while any alert is being held back. See
 [Dependencies](#dependencies) for what the columns mean and what suppression
 does and doesn't do.
 
