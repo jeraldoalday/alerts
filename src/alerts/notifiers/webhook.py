@@ -14,6 +14,10 @@ class WebhookNotifier:
     Any 2xx/3xx response counts as success; unlike Slack's webhook there's no
     fixed payload shape the receiving end expects, so the message is sent as
     plain JSON rather than a service-specific format.
+
+    `timeout_seconds` only applies to a self-owned client -- an injected one
+    (tests, or a client shared with another notifier) keeps whatever timeout
+    it was built with.
     """
 
     def __init__(
@@ -21,10 +25,11 @@ class WebhookNotifier:
         url: str,
         headers: Optional[Dict[str, str]] = None,
         client: Optional[httpx.AsyncClient] = None,
+        timeout_seconds: float = 10.0,
     ):
         self._url = url
         self._headers = headers or {}
-        self._client = client or httpx.AsyncClient()
+        self._client = client or httpx.AsyncClient(timeout=timeout_seconds)
         self._owns_client = client is None
 
     async def send(self, message: str) -> NotifyResult:

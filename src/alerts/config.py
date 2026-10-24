@@ -412,6 +412,7 @@ class SlackChannelConfig(BaseModel):
     name: str
     type: Literal["slack"]
     webhook_url_env: str
+    timeout_seconds: float = Field(default=10.0, gt=0)
 
     @property
     def webhook_url(self) -> str:
@@ -435,6 +436,7 @@ class WebhookChannelConfig(BaseModel):
     type: Literal["webhook"]
     url: str
     headers: Dict[str, str] = Field(default_factory=dict)
+    timeout_seconds: float = Field(default=10.0, gt=0)
 
     @property
     def resolved_url(self) -> str:
@@ -462,6 +464,7 @@ class EmailChannelConfig(BaseModel):
     to_addrs: List[str]
     username_env: Optional[str] = None
     password_env: Optional[str] = None
+    timeout_seconds: float = Field(default=10.0, gt=0)
 
     @property
     def username(self) -> Optional[str]:

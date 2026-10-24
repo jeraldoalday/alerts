@@ -62,6 +62,14 @@ async def test_email_notifier_sends_and_reports_success(monkeypatch):
     assert "site is down" in smtp.sent_messages[0].get_content()
 
 
+async def test_email_notifier_passes_configured_timeout_to_smtp(monkeypatch):
+    notifier = _notifier(monkeypatch, timeout_seconds=3.5)
+
+    await notifier.send("site is down")
+
+    assert _FakeSmtp.instances[0].timeout == 3.5
+
+
 async def test_email_notifier_skips_starttls_when_disabled(monkeypatch):
     notifier = _notifier(monkeypatch, use_tls=False)
 

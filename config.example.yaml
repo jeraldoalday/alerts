@@ -144,6 +144,10 @@ channels:
   - name: ops-slack
     type: slack
     webhook_url_env: SLACK_WEBHOOK_URL
+    # How long to wait for the webhook to answer before giving up on this
+    # send (default: 10). A hung send blocks this monitor's own check loop,
+    # since dispatch is awaited before the next interval is scheduled.
+    timeout_seconds: 10
 
   - name: ops-email
     type: email
@@ -153,6 +157,7 @@ channels:
     to_addrs: [oncall@example.com]
     username_env: SMTP_USERNAME
     password_env: SMTP_PASSWORD
+    timeout_seconds: 10
 
   - name: ops-pagerduty
     type: webhook
@@ -164,3 +169,4 @@ channels:
     headers:
       X-Source: alerts
       X-Api-Key: "${WEBHOOK_API_KEY}"
+    timeout_seconds: 10

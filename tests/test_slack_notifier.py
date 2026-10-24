@@ -47,6 +47,16 @@ async def test_slack_notifier_reports_connection_errors():
     assert "connection refused" in result.error_message
 
 
+async def test_self_owned_client_uses_configured_timeout():
+    notifier = SlackNotifier(
+        "https://hooks.slack.example/T000/B000/xyz", timeout_seconds=3.5
+    )
+
+    assert notifier._client.timeout.connect == 3.5
+
+    await notifier.aclose()
+
+
 async def test_aclose_closes_a_self_owned_client():
     notifier = SlackNotifier("https://hooks.slack.example/T000/B000/xyz")
 

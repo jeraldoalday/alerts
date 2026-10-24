@@ -46,6 +46,14 @@ async def test_webhook_notifier_reports_non_2xx_as_failure():
     assert result.error_message is not None
 
 
+async def test_self_owned_client_uses_configured_timeout():
+    notifier = WebhookNotifier("https://hooks.example.com/alerts", timeout_seconds=3.5)
+
+    assert notifier._client.timeout.connect == 3.5
+
+    await notifier.aclose()
+
+
 async def test_aclose_closes_a_self_owned_client():
     notifier = WebhookNotifier("https://hooks.example.com/alerts")
 

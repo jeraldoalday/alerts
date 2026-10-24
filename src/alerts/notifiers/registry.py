@@ -17,12 +17,16 @@ from alerts.notifiers.webhook import WebhookNotifier
 
 def build_notifier(channel: ChannelConfig) -> Notifier:
     if isinstance(channel, SlackChannelConfig):
-        return SlackNotifier(channel.webhook_url)
+        return SlackNotifier(channel.webhook_url, timeout_seconds=channel.timeout_seconds)
     if isinstance(channel, WebhookChannelConfig):
         # Resolved here rather than at load time, so a token lives in the
         # notifier that needs it instead of in the config object everything
         # else in the process is holding a reference to.
-        return WebhookNotifier(channel.resolved_url, headers=channel.resolved_headers)
+        return WebhookNotifier(
+            channel.resolved_url,
+            headers=channel.resolved_headers,
+            timeout_seconds=channel.timeout_seconds,
+        )
     if isinstance(channel, EmailChannelConfig):
         return EmailNotifier(
             smtp_host=channel.smtp_host,
@@ -32,6 +36,7 @@ def build_notifier(channel: ChannelConfig) -> Notifier:
             to_addrs=channel.to_addrs,
             username=channel.username,
             password=channel.password,
+            timeout_seconds=channel.timeout_seconds,
         )
     raise TypeError(f"unsupported channel config type: {type(channel)!r}")
 

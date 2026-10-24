@@ -1,8 +1,9 @@
 
 import pytest
 import yaml
+from pydantic import ValidationError
 
-from alerts.config import ConfigError, EmailChannelConfig, load_config
+from alerts.config import ConfigError, EmailChannelConfig, SlackChannelConfig, load_config
 
 VALID_CONFIG = """
 database:
@@ -221,6 +222,36 @@ def test_slack_channel_resolves_webhook_from_env(tmp_path, monkeypatch):
     config = load_config(config_file)
 
     assert config.channels[0].webhook_url == "https://hooks.slack.test/abc"
+
+
+def test_channel_timeout_defaults_to_ten_seconds(tmp_path):
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(VALID_CONFIG)
+
+    config = load_config(config_file)
+
+    assert config.channels[0].timeout_seconds == 10.0
+
+
+def test_channel_timeout_is_configurable():
+    channel = SlackChannelConfig(
+        name="ops-slack",
+        type="slack",
+        webhook_url_env="SLACK_WEBHOOK_URL",
+        timeout_seconds=2.5,
+    )
+
+    assert channel.timeout_seconds == 2.5
+
+
+def test_channel_timeout_of_zero_rejected():
+    with pytest.raises(ValidationError):
+        SlackChannelConfig(
+            name="ops-slack",
+            type="slack",
+            webhook_url_env="SLACK_WEBHOOK_URL",
+            timeout_seconds=0,
+        )
 
 
 def test_slack_channel_missing_env_raises(tmp_path, monkeypatch):
