@@ -3,7 +3,13 @@ import pytest
 import yaml
 from pydantic import ValidationError
 
-from alerts.config import ConfigError, EmailChannelConfig, SlackChannelConfig, load_config
+from alerts.config import (
+    ConfigError,
+    EmailChannelConfig,
+    MonitorConfig,
+    SlackChannelConfig,
+    load_config,
+)
 
 VALID_CONFIG = """
 database:
@@ -252,6 +258,28 @@ def test_channel_timeout_of_zero_rejected():
             webhook_url_env="SLACK_WEBHOOK_URL",
             timeout_seconds=0,
         )
+
+
+def test_expected_status_outside_the_http_range_is_rejected():
+    with pytest.raises(ValidationError):
+        MonitorConfig(
+            name="site",
+            type="http",
+            target="https://example.com",
+            expected_status=2000,
+        )
+
+
+def test_expected_status_at_the_edges_of_the_http_range_is_accepted():
+    low = MonitorConfig(
+        name="site", type="http", target="https://example.com", expected_status=100
+    )
+    high = MonitorConfig(
+        name="site", type="http", target="https://example.com", expected_status=599
+    )
+
+    assert low.expected_status == 100
+    assert high.expected_status == 599
 
 
 def test_slack_channel_missing_env_raises(tmp_path, monkeypatch):

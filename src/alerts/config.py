@@ -165,7 +165,7 @@ class MonitorConfig(BaseModel):
     target: str
     interval_seconds: int = Field(default=60, ge=5)
     timeout_seconds: int = Field(default=10, ge=1)
-    expected_status: int = 200
+    expected_status: int = Field(default=200, ge=100, le=599)
     failure_threshold: int = Field(default=3, ge=1)
     recovery_threshold: int = Field(default=2, ge=1)
     degraded_latency_ms: Optional[float] = Field(default=None, gt=0)
