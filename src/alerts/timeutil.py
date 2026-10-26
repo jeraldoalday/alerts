@@ -47,3 +47,24 @@ def as_utc_naive(value: datetime) -> datetime:
     if value.tzinfo is None:
         return value
     return value.astimezone(timezone.utc).replace(tzinfo=None)
+
+
+def format_duration(seconds: float) -> str:
+    """A compact, human-readable duration ("3d 4h", "12m").
+
+    Lives alongside the other time helpers rather than with the reporting
+    tables it was first written for, so a notification message can render
+    one without importing the reporting module's much larger dependency
+    chain (which reaches back into the scheduler) just for this.
+    """
+    seconds = max(int(seconds), 0)
+    days, seconds = divmod(seconds, 86_400)
+    hours, seconds = divmod(seconds, 3_600)
+    minutes, seconds = divmod(seconds, 60)
+    if days:
+        return f"{days}d {hours}h"
+    if hours:
+        return f"{hours}h {minutes}m"
+    if minutes:
+        return f"{minutes}m"
+    return f"{seconds}s"

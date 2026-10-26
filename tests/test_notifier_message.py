@@ -46,3 +46,20 @@ def test_resolved_message_has_no_cause():
 
     assert "RECOVERED" in message
     assert "connection refused" not in message
+
+
+def test_resolved_message_reports_how_long_the_incident_lasted():
+    incident = _incident(resolved_at=datetime(2026, 8, 15, 11, 5, 0, tzinfo=timezone.utc))
+
+    message = format_message(_monitor(), incident, NotificationKind.RESOLVED)
+
+    assert "after 1h 5m down" in message
+
+
+def test_resolved_message_omits_the_duration_when_resolved_at_is_missing():
+    """Defensive: `sync_incident` always sets it before this is called for a
+    real incident, but a row built without one still gets a message."""
+    message = format_message(_monitor(), _incident(resolved_at=None), NotificationKind.RESOLVED)
+
+    assert message == "[RECOVERED] main-site (https://example.com) is back up"
+    assert "after" not in message

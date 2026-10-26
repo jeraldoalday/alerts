@@ -30,7 +30,7 @@ from alerts.maintenance import active_occurrence, describe_schedule, next_occurr
 from alerts.models import Incident, IncidentState, MonitorState
 from alerts.probe import ProbeResult
 from alerts.slo import BudgetStatus, ErrorBudget
-from alerts.timeutil import as_utc_naive, utcnow
+from alerts.timeutil import as_utc_naive, format_duration, utcnow
 from alerts.web import queries
 from alerts.web.stats import compute_uptime_stats
 
@@ -180,21 +180,6 @@ def collect_status_rows(
             )
         )
     return rows
-
-
-def format_duration(seconds: float) -> str:
-    """A compact, human-readable duration ("3d 4h", "12m")."""
-    seconds = max(int(seconds), 0)
-    days, seconds = divmod(seconds, 86_400)
-    hours, seconds = divmod(seconds, 3_600)
-    minutes, seconds = divmod(seconds, 60)
-    if days:
-        return f"{days}d {hours}h"
-    if hours:
-        return f"{hours}h {minutes}m"
-    if minutes:
-        return f"{minutes}m"
-    return f"{seconds}s"
 
 
 def _relative_age(value: Optional[datetime], now: datetime) -> str:
