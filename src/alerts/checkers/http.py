@@ -35,6 +35,9 @@ def _assertion_failure(request: CheckRequest, response: httpx.Response) -> Optio
     expected_body = request.expected_body_contains
     if expected_body is not None and expected_body not in _body_text(response):
         return f"response body does not contain {expected_body!r}"
+    forbidden_body = request.expected_body_not_contains
+    if forbidden_body is not None and forbidden_body in _body_text(response):
+        return f"response body contains {forbidden_body!r}"
     return None
 
 
@@ -48,7 +51,9 @@ class HttpChecker:
     The status code is always compared. A request that also carries
     `expected_body_contains` has to find that substring in the response body:
     plenty of health endpoints answer 200 with a body saying which dependency
-    is broken, and a status-only check calls that healthy.
+    is broken, and a status-only check calls that healthy. `expected_body_not_contains`
+    is the mirror image: it fails the check if the substring IS found, for a
+    maintenance banner or error page that still answers 200.
 
     Reuses one `httpx.AsyncClient` (connection pooling) across calls to `check`
     unless a client is injected, e.g. for tests using `httpx.MockTransport`.

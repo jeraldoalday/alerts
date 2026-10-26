@@ -599,7 +599,11 @@ land):
 
 An HTTP monitor can also require a substring in the response body via
 `expected_body_contains`, which catches the health endpoint that answers
-200 with a body naming the dependency that's broken.
+200 with a body naming the dependency that's broken. `expected_body_not_contains`
+is the opposite assertion -- the check fails if the substring *is* found --
+for a maintenance banner or an error notice served alongside an otherwise
+healthy status code. Both may be set on the same monitor; each is checked
+independently, not as one another's negation.
 
 ## HTTP request options
 
@@ -624,8 +628,8 @@ monitors:
 `method` is `GET`, `HEAD`, or `OPTIONS` — all of them request methods with no
 body, since there is nowhere in a monitor's config to put one. `HEAD` is the
 cheap option for a target whose status code is the whole signal; it can't be
-combined with `expected_body_contains`, which is rejected at load time rather
-than failing every check.
+combined with `expected_body_contains` or `expected_body_not_contains`, which
+are rejected at load time rather than failing every check.
 
 Header values may contain `${VAR}` placeholders resolved from the
 environment, so a token stays out of the committed config *and* out of the

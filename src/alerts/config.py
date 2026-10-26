@@ -172,6 +172,11 @@ class MonitorConfig(BaseModel):
     # HTTP only: a substring the response body must contain for the check to
     # pass, on top of the status code matching.
     expected_body_contains: Optional[str] = Field(default=None, min_length=1)
+    # HTTP only: a substring the response body must NOT contain. Catches a
+    # health endpoint that answers 200 with its normal body while a banner
+    # or maintenance page is layered in front of it -- the opposite failure
+    # mode from expected_body_contains, and checked independently of it.
+    expected_body_not_contains: Optional[str] = Field(default=None, min_length=1)
     # HTTP only: the request method, and headers sent with every check.
     # Header values may carry `${VAR}` placeholders resolved from the
     # environment, so an API token never lands in the committed config.
@@ -299,7 +304,9 @@ class MonitorConfig(BaseModel):
         match and every check would fail -- reporting an endpoint as down
         because of how it is being asked, not how it is behaving.
         """
-        if self.method == "HEAD" and self.expected_body_contains is not None:
+        if self.method == "HEAD" and (
+            self.expected_body_contains is not None or self.expected_body_not_contains is not None
+        ):
             raise ValueError(
                 f"monitor {self.name!r} asserts on the response body but uses "
                 "HEAD, which returns no body"
@@ -318,6 +325,11 @@ class MonitorConfig(BaseModel):
         if self.expected_body_contains is not None and self.type != "http":
             raise ValueError(
                 f"monitor {self.name!r} sets expected_body_contains but is a "
+                f"{self.type!r} monitor, which never reads a response body"
+            )
+        if self.expected_body_not_contains is not None and self.type != "http":
+            raise ValueError(
+                f"monitor {self.name!r} sets expected_body_not_contains but is a "
                 f"{self.type!r} monitor, which never reads a response body"
             )
         return self

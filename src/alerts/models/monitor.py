@@ -58,6 +58,10 @@ class Monitor(Base):
     # HTTP only: substring the response body must contain. NULL means the
     # status code is the only assertion.
     expected_body_contains: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # HTTP only: substring the response body must NOT contain. NULL means
+    # nothing is being watched for. Checked independently of
+    # expected_body_contains, not as its negation.
+    expected_body_not_contains: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     # HTTP only: the request method, and the headers sent with every check.
     # Header values are stored exactly as configured, `${VAR}` placeholders
     # included -- they are expanded per check, so a resolved API token lives

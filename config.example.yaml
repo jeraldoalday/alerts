@@ -110,6 +110,11 @@ monitors:
     headers:
       Authorization: "Bearer ${API_TOKEN}"
       Accept: application/json
+    # The mirror image of expected_body_contains: the check fails if the
+    # response body contains this substring, even on a 200. Catches a
+    # maintenance banner or a degraded-mode notice served alongside an
+    # otherwise-healthy status code.
+    expected_body_not_contains: "maintenance mode"
     tags: [prod, api, payments]
     # A tighter promise over a shorter window, for a service whose outages
     # are noticed within the hour rather than at the end of the month.

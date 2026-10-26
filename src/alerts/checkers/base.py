@@ -26,6 +26,7 @@ class CheckRequest:
     timeout_seconds: float
     expected_status: int = 200
     expected_body_contains: Optional[str] = None
+    expected_body_not_contains: Optional[str] = None
     method: str = "GET"
     headers: Mapping[str, str] = field(default_factory=dict)
 
@@ -48,6 +49,7 @@ class CheckRequest:
             timeout_seconds=monitor.timeout_seconds,
             expected_status=monitor.expected_status,
             expected_body_contains=monitor.expected_body_contains,
+            expected_body_not_contains=monitor.expected_body_not_contains,
             method=monitor.method,
             headers=expand_mapping(monitor.headers or {}),
         )
@@ -67,6 +69,7 @@ class CheckRequest:
             timeout_seconds=monitor.timeout_seconds,
             expected_status=monitor.expected_status,
             expected_body_contains=monitor.expected_body_contains,
+            expected_body_not_contains=monitor.expected_body_not_contains,
             method=monitor.method,
             headers=expand_mapping(monitor.headers),
         )
