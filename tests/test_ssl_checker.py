@@ -98,3 +98,13 @@ def test_split_host_port_rejects_an_unterminated_bracket():
 def test_split_host_port_rejects_a_non_numeric_port_after_a_bracketed_host():
     with pytest.raises(ValueError, match="must be"):
         _split_host_port("[::1]:https")
+
+
+def test_split_host_port_rejects_trailing_text_with_no_colon_after_a_bracketed_host():
+    with pytest.raises(ValueError, match="must be"):
+        _split_host_port("[::1]stray")
+
+
+def test_split_host_port_rejects_a_colon_with_no_host_before_it():
+    with pytest.raises(ValueError, match="must be"):
+        _split_host_port(":443")
