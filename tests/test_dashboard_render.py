@@ -59,6 +59,24 @@ def test_render_index_escapes_monitor_name():
     assert "&lt;script&gt;" in html
 
 
+def test_render_index_declares_language_and_viewport():
+    """A screen reader needs `lang` to pick the right voice, and a phone
+    needs the viewport meta to avoid rendering the dashboard at desktop
+    width and then zooming it down to illegible."""
+    html = render.render_index([(_monitor(), _NO_STATS, None)])
+
+    assert '<html lang="en">' in html
+    assert '<meta name="viewport" content="width=device-width, initial-scale=1">' in html
+
+
+def test_render_index_table_headers_declare_column_scope():
+    """`scope="col"` is what lets a screen reader announce "Monitor" when
+    it reads the first cell of a data row, instead of just the cell text."""
+    html = render.render_index([(_monitor(), _NO_STATS, None)])
+
+    assert '<th scope="col">Monitor</th>' in html
+
+
 def test_render_monitor_detail_escapes_error_message():
     monitor = _monitor()
     check = CheckResult(

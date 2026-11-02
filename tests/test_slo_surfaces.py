@@ -136,7 +136,7 @@ def test_the_index_shows_the_target_and_what_is_left_of_the_budget():
 def test_the_index_shows_an_em_dash_for_a_monitor_with_no_objective():
     html = render.render_index([(_monitor(slo_target=None), _NO_STATS, None)])
 
-    assert "<th>SLO</th>" in html
+    assert '<th scope="col">SLO</th>' in html
     assert "&mdash;" in html
 
 

@@ -61,7 +61,8 @@ th { color: #57606a; font-weight: 600; font-size: 0.85rem; text-transform: upper
 
 def _page(title: str, body: str) -> str:
     return (
-        "<!doctype html><html><head><meta charset=\"utf-8\">"
+        '<!doctype html><html lang="en"><head><meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width, initial-scale=1">'
         f"<title>{escape(title)}</title><style>{_STYLE}</style></head>"
         f"<body>{body}</body></html>"
     )
@@ -396,9 +397,11 @@ def render_index(
     )
     empty_row = f'<tr><td colspan="9" class="muted">{empty_message}</td></tr>'
     table = (
-        "<table><thead><tr><th>Monitor</th><th>Type</th><th>Tags</th><th>State</th>"
-        "<th>Uptime</th><th>Avg latency</th><th>p95 latency</th><th>SLO</th>"
-        "<th>Last checked</th></tr></thead>"
+        '<table><thead><tr><th scope="col">Monitor</th><th scope="col">Type</th>'
+        '<th scope="col">Tags</th><th scope="col">State</th>'
+        '<th scope="col">Uptime</th><th scope="col">Avg latency</th>'
+        '<th scope="col">p95 latency</th><th scope="col">SLO</th>'
+        '<th scope="col">Last checked</th></tr></thead>'
         f"<tbody>{''.join(body_rows) or empty_row}</tbody>"
         "</table>"
     )
@@ -516,15 +519,16 @@ def render_monitor_detail(
 ) -> str:
     empty_checks_row = '<tr><td colspan="5" class="muted">No checks yet.</td></tr>'
     checks_table = (
-        "<table><thead><tr><th>Checked at</th><th>Result</th><th>Latency</th>"
-        "<th>Status</th><th>Error</th></tr></thead>"
+        '<table><thead><tr><th scope="col">Checked at</th><th scope="col">Result</th>'
+        '<th scope="col">Latency</th><th scope="col">Status</th>'
+        '<th scope="col">Error</th></tr></thead>'
         f"<tbody>{''.join(_check_result_row(r) for r in check_results) or empty_checks_row}</tbody>"
         "</table>"
     )
     empty_incidents_row = '<tr><td colspan="4" class="muted">No incidents.</td></tr>'
     incidents_table = (
-        "<table><thead><tr><th>State</th><th>Started</th><th>Resolved</th>"
-        "<th>Cause</th></tr></thead>"
+        '<table><thead><tr><th scope="col">State</th><th scope="col">Started</th>'
+        '<th scope="col">Resolved</th><th scope="col">Cause</th></tr></thead>'
         f"<tbody>{''.join(_incident_row(i) for i in incidents) or empty_incidents_row}</tbody>"
         "</table>"
     )

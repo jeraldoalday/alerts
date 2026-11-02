@@ -75,7 +75,7 @@ def test_the_index_shows_p95_next_to_the_mean():
 
     html = render.render_index([(_monitor(), stats, None)])
 
-    assert "<th>p95 latency</th>" in html
+    assert '<th scope="col">p95 latency</th>' in html
     assert "295 ms" in html, "the mean, which the outlier barely moves"
     assert "100 ms" in html, "p95, which is not the outlier either"
 
@@ -84,7 +84,7 @@ def test_the_index_row_still_matches_its_header_width():
     """The empty-state row spans the table, so its colspan tracks the columns."""
     html = render.render_index([])
 
-    assert html.count("<th>") == 9
+    assert html.count('<th scope="col">') == 9
     assert 'colspan="9"' in html
 
 
