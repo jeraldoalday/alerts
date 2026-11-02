@@ -321,6 +321,16 @@ def test_email_channel_credentials_are_none_without_env_vars():
     assert channel.password is None
 
 
+def test_email_channel_with_no_recipients_is_rejected():
+    with pytest.raises(ValidationError, match="at least one recipient"):
+        _email_channel(to_addrs=[])
+
+
+def test_email_channel_with_a_blank_recipient_is_rejected():
+    with pytest.raises(ValidationError, match="must not be blank"):
+        _email_channel(to_addrs=["oncall@example.com", "  "])
+
+
 def test_monitor_degraded_latency_defaults_to_none(tmp_path):
     config = _write_and_load(
         tmp_path,

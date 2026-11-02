@@ -478,6 +478,23 @@ class EmailChannelConfig(BaseModel):
     password_env: Optional[str] = None
     timeout_seconds: float = Field(default=10.0, gt=0)
 
+    @field_validator("to_addrs")
+    @classmethod
+    def to_addrs_names_at_least_one_recipient(cls, addrs: List[str]) -> List[str]:
+        """Reject an email channel with no one to send to.
+
+        An empty list passes the type check and builds a notifier that
+        sends an email with a blank `To` header -- a failure the SMTP
+        server reports back as a notification-send error, at the moment an
+        alert is firing, instead of here at config load where it belongs.
+        """
+        if not addrs:
+            raise ValueError("to_addrs must name at least one recipient")
+        for raw in addrs:
+            if not raw.strip():
+                raise ValueError("to_addrs entries must not be blank")
+        return addrs
+
     @property
     def username(self) -> Optional[str]:
         return os.environ.get(self.username_env) if self.username_env else None
